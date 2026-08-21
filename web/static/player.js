@@ -18,11 +18,17 @@ class NDIWebRTCPlayer {
     this.pc = null;
     this.ws = null;
     this.statsInterval = null;
+    this.reconnectTimer = null;
     this.isConnected = false;
     this.isReconnecting = false;
   }
 
   async start() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.isReconnecting = false;
     this.options.onStatusChange('connecting', 'Negotiating WebRTC stream...');
     try {
       await this._connectWebSocket();
@@ -34,15 +40,17 @@ class NDIWebRTCPlayer {
 
   async _connectWebSocket() {
     this._cleanup();
-    this.pc = new RTCPeerConnection({
+    const pc = new RTCPeerConnection({
       iceServers: [],
       bundlePolicy: 'max-bundle',
     });
+    this.pc = pc;
 
-    this.pc.addTransceiver('video', { direction: 'recvonly' });
-    this.pc.addTransceiver('audio', { direction: 'recvonly' });
+    pc.addTransceiver('video', { direction: 'recvonly' });
+    pc.addTransceiver('audio', { direction: 'recvonly' });
 
-    this.pc.ontrack = (evt) => {
+    pc.ontrack = (evt) => {
+      if (this.pc !== pc) return;
       if (this.video.srcObject !== evt.streams[0]) {
         this.video.srcObject = evt.streams[0];
         this.video.play().catch(e => {
@@ -53,8 +61,9 @@ class NDIWebRTCPlayer {
       }
     };
 
-    this.pc.onconnectionstatechange = () => {
-      const state = this.pc.connectionState;
+    pc.onconnectionstatechange = () => {
+      if (this.pc !== pc) return;
+      const state = pc.connectionState;
       console.log('WebRTC Connection State:', state);
       if (state === 'connected') {
         this.isConnected = true;
@@ -67,38 +76,49 @@ class NDIWebRTCPlayer {
       }
     };
 
-    const offer = await this.pc.createOffer({
+    const offer = await pc.createOffer({
       offerToReceiveVideo: true,
       offerToReceiveAudio: true,
     });
-    await this.pc.setLocalDescription(offer);
+    await pc.setLocalDescription(offer);
 
     // Connect WS
-    this.ws = new WebSocket(this.options.signalingUrl);
-    this.ws.onopen = () => {
-      this.ws.send(JSON.stringify({
+    const ws = new WebSocket(this.options.signalingUrl);
+    this.ws = ws;
+
+    ws.onopen = () => {
+      if (this.ws !== ws) return;
+      ws.send(JSON.stringify({
         type: 'offer',
-        sdp: this.pc.localDescription.sdp,
+        sdp: pc.localDescription.sdp,
       }));
     };
 
-    this.ws.onmessage = async (evt) => {
-      const data = JSON.parse(evt.data);
-      if (data.type === 'answer') {
-        await this.pc.setRemoteDescription(new RTCSessionDescription({
-          type: 'answer',
-          sdp: data.sdp,
-        }));
+    ws.onmessage = async (evt) => {
+      if (this.ws !== ws || this.pc !== pc) return;
+      try {
+        const data = JSON.parse(evt.data);
+        if (data.type === 'answer') {
+          await pc.setRemoteDescription(new RTCSessionDescription({
+            type: 'answer',
+            sdp: data.sdp,
+          }));
+        }
+      } catch (e) {
+        console.error('Error handling signaling message:', e);
       }
     };
 
-    this.ws.onerror = (err) => {
+    ws.onerror = (err) => {
+      if (this.ws !== ws) return;
       console.error('Signaling WebSocket error:', err);
       this._scheduleReconnect();
     };
 
-    this.ws.onclose = () => {
+    ws.onclose = () => {
+      if (this.ws !== ws) return;
       if (this.isConnected) {
+        this.isConnected = false;
         this.options.onStatusChange('offline', 'Stream Closed');
         this._scheduleReconnect();
       }
@@ -107,36 +127,50 @@ class NDIWebRTCPlayer {
 
   async _connectWHEP() {
     this._cleanup();
-    this.pc = new RTCPeerConnection({ iceServers: [] });
-    this.pc.addTransceiver('video', { direction: 'recvonly' });
-    this.pc.addTransceiver('audio', { direction: 'recvonly' });
+    const pc = new RTCPeerConnection({ iceServers: [] });
+    this.pc = pc;
 
-    this.pc.ontrack = (evt) => {
+    pc.addTransceiver('video', { direction: 'recvonly' });
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+
+    pc.ontrack = (evt) => {
+      if (this.pc !== pc) return;
       if (this.video.srcObject !== evt.streams[0]) {
         this.video.srcObject = evt.streams[0];
         this.video.play().catch(e => console.log('Autoplay audio interaction needed:', e));
       }
     };
 
-    const offer = await this.pc.createOffer();
-    await this.pc.setLocalDescription(offer);
+    pc.onconnectionstatechange = () => {
+      if (this.pc !== pc) return;
+      const state = pc.connectionState;
+      if (state === 'connected') {
+        this.isConnected = true;
+        this.options.onStatusChange('live', 'LIVE (WHEP)');
+        this._startStats();
+      } else if (state === 'disconnected' || state === 'failed') {
+        this.isConnected = false;
+        this.options.onStatusChange('offline', 'Disconnected');
+        this._scheduleReconnect();
+      }
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
 
     const res = await fetch(this.options.whepUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/sdp' },
-      body: this.pc.localDescription.sdp,
+      body: pc.localDescription.sdp,
     });
 
     if (!res.ok) throw new Error('WHEP offer failed: ' + res.statusText);
 
     const answerSdp = await res.text();
-    await this.pc.setRemoteDescription(new RTCSessionDescription({
+    await pc.setRemoteDescription(new RTCSessionDescription({
       type: 'answer',
       sdp: answerSdp,
     }));
-    this.isConnected = true;
-    this.options.onStatusChange('live', 'LIVE (WHEP)');
-    this._startStats();
   }
 
   _startStats() {
@@ -187,30 +221,52 @@ class NDIWebRTCPlayer {
   _scheduleReconnect() {
     if (!this.options.autoReconnect || this.isReconnecting) return;
     this.isReconnecting = true;
-    setTimeout(() => {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+    }
+    this.reconnectTimer = setTimeout(() => {
       this.isReconnecting = false;
+      this.reconnectTimer = null;
       this.start();
     }, this.options.reconnectInterval);
   }
 
   _cleanup() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.isReconnecting = false;
+    this.isConnected = false;
+
     if (this.statsInterval) {
       clearInterval(this.statsInterval);
       this.statsInterval = null;
     }
     if (this.ws) {
-      this.ws.close();
+      const oldWs = this.ws;
       this.ws = null;
+      oldWs.onopen = null;
+      oldWs.onmessage = null;
+      oldWs.onerror = null;
+      oldWs.onclose = null;
+      try {
+        oldWs.close();
+      } catch (e) {}
     }
     if (this.pc) {
-      this.pc.close();
+      const oldPc = this.pc;
       this.pc = null;
+      oldPc.ontrack = null;
+      oldPc.onconnectionstatechange = null;
+      try {
+        oldPc.close();
+      } catch (e) {}
     }
   }
 
   stop() {
     this._cleanup();
-    this.isConnected = false;
     if (this.video) {
       this.video.srcObject = null;
     }

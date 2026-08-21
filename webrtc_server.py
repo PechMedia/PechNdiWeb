@@ -190,6 +190,11 @@ class NDIVideoTrack(VideoStreamTrack):
                     img_arr = raw_data[: height * width * 4].reshape((height, width, 4))
                     video_frame = av.VideoFrame.from_ndarray(img_arr[:, :, :3], format="bgr24")
 
+                target_w = int(self.config.get("video", "target_width", 0) or 0)
+                target_h = int(self.config.get("video", "target_height", 0) or 0)
+                if target_w > 0 and target_h > 0 and (video_frame.width != target_w or video_frame.height != target_h):
+                    video_frame = video_frame.reformat(width=target_w, height=target_h)
+
                 video_frame.pts = pts
                 video_frame.time_base = self._time_base
                 return video_frame
