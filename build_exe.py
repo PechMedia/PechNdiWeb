@@ -1,38 +1,48 @@
 """
-Build script for packaging PECH NDI-to-WebRTC Bridge into a single Windows .exe
-Uses PyInstaller with all required web assets and NDI dependencies.
+Build script for packaging PECH NDI-to-WebRTC Bridge into a single standalone Windows .exe
+Uses PyInstaller --onefile with all required web assets and WebRTC/NDI dependencies.
 """
 
 import os
 import subprocess
 import sys
 
-def build():
-    print("Building PECH NDI-to-WebRTC Bridge executable...")
 
-    ndi_dll = r"C:\Program Files\NDI\NDI 6 Runtime\v6\Processing.NDI.Lib.x64.dll"
-    if not os.path.exists(ndi_dll):
-        print(f"Warning: NDI Runtime DLL not found at {ndi_dll}. Ensure NDI 6 is installed.")
+def build():
+    print("=" * 60)
+    print(" Packaging PECH NDI-to-WebRTC Bridge into a Single .EXE")
+    print("=" * 60)
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    web_dir = os.path.join(base_dir, "web")
 
     cmd = [
         sys.executable,
         "-m", "PyInstaller",
         "--noconfirm",
-        "--onedir",
+        "--clean",
+        "--onefile",
         "--name", "PECH_NDI_WebRTC",
-        "--add-data", f"web{os.pathsep}web",
-        "--add-data", f"settings.json{os.pathsep}.",
+        "--add-data", f"{web_dir}{os.pathsep}web",
         "--hidden-import", "aiortc",
+        "--hidden-import", "aiortc.mediastreams",
         "--hidden-import", "aiohttp",
         "--hidden-import", "av",
         "--hidden-import", "numpy",
+        "--hidden-import", "websockets",
         "--hidden-import", "webview",
-        "main.py"
+        "--hidden-import", "clr_loader",
+        "main.py",
     ]
 
-    print("Running command:", " ".join(cmd))
-    subprocess.check_call(cmd)
-    print("\n[SUCCESS] Build complete! Executable located in: dist/PECH_NDI_WebRTC/PECH_NDI_WebRTC.exe")
+    print("Running PyInstaller:", " ".join(cmd))
+    subprocess.check_call(cmd, cwd=base_dir)
+    exe_path = os.path.join(base_dir, "dist", "PECH_NDI_WebRTC.exe")
+    print("\n" + "=" * 60)
+    print(f"[SUCCESS] Standalone single executable created:")
+    print(f"  --> {exe_path}")
+    print("=" * 60)
+
 
 if __name__ == "__main__":
     build()

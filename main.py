@@ -89,12 +89,19 @@ class AsyncServerThread(threading.Thread):
 def main():
     args = parse_args()
 
-    # Determine base directories
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    web_dir = os.path.join(base_dir, "web")
+    # Determine base directories (supporting PyInstaller --onefile mode)
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(sys.executable)
+        bundle_dir = getattr(sys, "_MEIPASS", exe_dir)
+    else:
+        exe_dir = os.path.dirname(os.path.abspath(__file__))
+        bundle_dir = exe_dir
+
+    web_dir = os.path.join(bundle_dir, "web")
+    config_file_path = args.config if os.path.isabs(args.config) else os.path.join(exe_dir, args.config)
 
     # Load / create configuration
-    config = ConfigManager(config_path=args.config)
+    config = ConfigManager(config_path=config_file_path)
 
     # Apply CLI overrides
     updates = {}
