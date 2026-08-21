@@ -48,7 +48,11 @@ Simply **double-click** `PECH_NDI_WebRTC.exe` (or run from PowerShell/CMD):
 ### Mode 2: Headless Mode (CLI / Background Service)
 Run with the `--headless` switch to start as a lightweight background server without opening a GUI window:
 ```powershell
-.\PECH_NDI_WebRTC.exe --headless
+.\dist\PECH_NDI_WebRTC.exe --headless
+```
+*Or simply double-click the included batch launcher:*
+```powershell
+.\dist\start_headless.bat
 ```
 
 #### Command-Line Options

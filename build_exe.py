@@ -38,9 +38,27 @@ def build():
     print("Running PyInstaller:", " ".join(cmd))
     subprocess.check_call(cmd, cwd=base_dir)
     exe_path = os.path.join(base_dir, "dist", "PECH_NDI_WebRTC.exe")
+    
+    # Create start_headless.bat in dist folder
+    bat_path = os.path.join(base_dir, "dist", "start_headless.bat")
+    with open(bat_path, "w", encoding="utf-8") as f:
+        f.write("@echo off\n"
+                "setlocal\n"
+                "cd /d \"%~dp0\"\n"
+                "echo ============================================================\n"
+                "echo  Starting PECH NDI-to-WebRTC Bridge in HEADLESS Mode\n"
+                "echo ============================================================\n"
+                "PECH_NDI_WebRTC.exe --headless %*\n"
+                "if errorlevel 1 (\n"
+                "    echo.\n"
+                "    echo Application exited with error code %errorlevel%\n"
+                "    pause\n"
+                ")\n")
+    
     print("\n" + "=" * 60)
-    print(f"[SUCCESS] Standalone single executable created:")
+    print(f"[SUCCESS] Standalone single executable and headless launcher created:")
     print(f"  --> {exe_path}")
+    print(f"  --> {bat_path}")
     print("=" * 60)
 
 
