@@ -3,66 +3,167 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PECH NDI WebRTC Live Player (Zero Latency)</title>
-  <link rel="stylesheet" href="/static/style.css?v=1.0.2">
+  <title>PECH NDI Stream (Zero Latency)</title>
+  <link rel="stylesheet" href="/static/style.css?v=1.0.3">
 </head>
-<body>
-  <header>
-    <div class="logo-container">
-      <div class="logo-badge">NDI &rarr; WebRTC</div>
-      <div class="logo-title">PECH Ultra-Low Latency Player</div>
+<body class="pure-player">
+  <!-- Fullscreen Edge-to-Edge Video Stage -->
+  <div class="pure-video-wrapper" id="videoStage">
+    <video id="remoteVideo" autoplay playsinline muted></video>
+  </div>
+
+  <!-- Unmute prompt banner (only visible if autoplay audio was blocked) -->
+  <div id="unmuteBanner" class="unmute-banner" style="display: none;">
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+      <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+    </svg>
+    <div>Click anywhere to unmute stream</div>
+  </div>
+
+  <!-- Floating Stats Overlay (Toggled via Right-Click) -->
+  <div class="floating-stats-overlay" id="statsOverlay">
+    <div class="stat-tag" id="statFps">-- FPS</div>
+    <div class="stat-tag" id="statRes">-- x --</div>
+    <div class="stat-tag" id="statBitrate">-- kbps</div>
+    <div class="stat-tag" id="statLatency" style="color: var(--accent-green);">&lt;50ms Latency</div>
+  </div>
+
+  <!-- Custom Right-Click Context Menu -->
+  <div id="contextMenu" class="custom-context-menu">
+    <div class="context-menu-header">PECH NDI Stream</div>
+    
+    <div class="context-menu-item" id="ctxSettings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="3"></circle>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+      </svg>
+      <span>Stream Settings</span>
     </div>
-    <div class="header-actions">
-      <div class="status-pill">
-        <div id="statusDot" class="status-dot connecting"></div>
-        <span id="statusText">Connecting...</span>
+
+    <div class="context-menu-item" id="ctxFullscreen">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>
+      </svg>
+      <span>Toggle Fullscreen</span>
+    </div>
+
+    <div class="context-menu-item" id="ctxAudio">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+        <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+      </svg>
+      <span id="ctxAudioLabel">Unmute Audio</span>
+    </div>
+
+    <div class="context-menu-item" id="ctxStats">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M18 20V10M12 20V4M6 20v-6"></path>
+      </svg>
+      <span>Toggle Stats Overlay</span>
+    </div>
+
+    <div class="context-menu-divider"></div>
+
+    <div class="context-menu-item" id="ctxShare">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="3" y="3" width="7" height="7"></rect>
+        <rect x="14" y="3" width="7" height="7"></rect>
+        <rect x="14" y="14" width="7" height="7"></rect>
+        <rect x="3" y="14" width="7" height="7"></rect>
+      </svg>
+      <span>Share LAN URL / QR</span>
+    </div>
+
+    <a href="/admin" class="context-menu-item" id="ctxAdmin">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+        <line x1="3" y1="9" x2="21" y2="9"></line>
+        <line x1="9" y1="21" x2="9" y2="9"></line>
+      </svg>
+      <span>Full Admin Dashboard</span>
+    </a>
+  </div>
+
+  <!-- Settings Modal (Opened via Right-Click) -->
+  <div class="modal-backdrop" id="settingsModal">
+    <div class="modal-dialog" style="max-width: 480px;">
+      <div class="modal-header">
+        <h3>Stream Configuration</h3>
+        <button class="btn btn-secondary btn-sm" id="btnCloseSettingsModal">&times;</button>
       </div>
-      <a href="/admin" class="btn btn-secondary btn-sm" id="btnAdminLink">Admin / Config</a>
-      <button class="btn btn-secondary btn-sm" id="btnShareModal">Share LAN URL</button>
-    </div>
-  </header>
 
-  <main>
-    <div class="player-layout">
-      <div class="video-stage-container" id="videoStage">
-        <video id="remoteVideo" autoplay playsinline muted></video>
-
-        <!-- Unmute prompt banner if browser blocks autoplay audio -->
-        <div id="unmuteBanner" class="unmute-banner" style="display: none;">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
-            <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
-          </svg>
-          <div>Click here to unmute audio</div>
+      <form id="inlineSettingsForm">
+        <div class="form-group">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;">
+            <label class="form-label" style="margin-bottom: 0;">NDI Source</label>
+            <button type="button" class="btn btn-secondary btn-sm" id="btnModalRefreshSources" style="padding: 0.2rem 0.5rem; font-size: 0.75rem;">
+              &#x21bb; Scan
+            </button>
+          </div>
+          <select id="modalNdiSource" class="form-select">
+            <option value="">-- Scanning for NDI streams... --</option>
+          </select>
         </div>
 
-        <!-- Overlays -->
-        <div class="video-overlay-top">
-          <div class="overlay-stats">
-            <div class="stat-tag" id="statFps">-- FPS</div>
-            <div class="stat-tag" id="statRes">-- x --</div>
-            <div class="stat-tag" id="statBitrate">-- kbps</div>
-            <div class="stat-tag" style="color: var(--accent-green);">&lt;50ms Latency</div>
+        <div class="form-group">
+          <label class="form-label">Resolution</label>
+          <select id="modalResolution" class="form-select">
+            <option value="0x0">Native Source Resolution (Recommended)</option>
+            <option value="3840x2160">4K UHD (3840 x 2160)</option>
+            <option value="1920x1080">1080p Full HD (1920 x 1080)</option>
+            <option value="1280x720">720p HD (1280 x 720)</option>
+            <option value="854x480">480p SD (854 x 480)</option>
+          </select>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Framerate</label>
+            <select id="modalFps" class="form-select">
+              <option value="0">Source Native FPS</option>
+              <option value="60">60 FPS</option>
+              <option value="50">50 FPS</option>
+              <option value="30">30 FPS</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Bitrate (kbps)</label>
+            <input type="number" id="modalBitrate" class="form-control" value="6000" min="500" max="50000" step="500" />
           </div>
         </div>
 
-        <div class="video-overlay-controls">
-          <button class="btn btn-secondary btn-sm" id="btnToggleAudio">Audio: Muted</button>
-          <button class="btn btn-secondary btn-sm" id="btnFullscreen">Fullscreen</button>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Audio Sample Rate</label>
+            <select id="modalSampleRate" class="form-select">
+              <option value="48000">48 kHz (Broadcast/Opus)</option>
+              <option value="44100">44.1 kHz</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">HTTP Port</label>
+            <input type="number" id="modalPort" class="form-control" value="8080" />
+          </div>
         </div>
-      </div>
-    </div>
-  </main>
 
-  <!-- Share Modal -->
+        <div style="display: flex; gap: 0.75rem; margin-top: 1.5rem;">
+          <button type="submit" class="btn btn-primary" style="flex: 1;">Save & Apply</button>
+          <button type="button" class="btn btn-secondary" id="btnCancelSettingsModal">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Share / QR Modal -->
   <div class="modal-backdrop" id="shareModal">
     <div class="modal-dialog">
       <div class="modal-header">
         <h3>Connect Any Device on LAN</h3>
-        <button class="btn btn-secondary btn-sm" id="btnCloseModal">&times;</button>
+        <button class="btn btn-secondary btn-sm" id="btnCloseShareModal">&times;</button>
       </div>
       <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
-        Scan this QR code with your mobile camera or open the link on any browser connected to the same Wi-Fi network.
+        Scan this QR code with your mobile camera or open the link on any browser on your Wi-Fi:
       </p>
       <div class="qr-wrapper">
         <div id="qrCodeContainer" class="qr-code-box"></div>
@@ -76,17 +177,23 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="/static/player.js?v=1.0.2"></script>
+  <script src="/static/player.js?v=1.0.3"></script>
   <script>
     let player = null;
+    let idleTimer = null;
+    let statsVisible = false;
+
     document.addEventListener('DOMContentLoaded', () => {
       const videoEl = document.getElementById('remoteVideo');
+      
+      // Initialize WebRTC player
       player = new NDIWebRTCPlayer(videoEl, {
         onStatusChange: (status, msg) => {
-          const dot = document.getElementById('statusDot');
-          const txt = document.getElementById('statusText');
-          if (dot) dot.className = 'status-dot ' + status;
-          if (txt) txt.innerText = msg;
+          const latEl = document.getElementById('statLatency');
+          if (latEl) {
+            latEl.innerText = status === 'live' ? '<50ms Latency' : msg;
+            latEl.style.color = status === 'live' ? 'var(--accent-green)' : 'var(--accent-yellow)';
+          }
         },
         onStatsUpdate: (stats) => {
           if (stats.fps) document.getElementById('statFps').innerText = `${stats.fps} FPS`;
@@ -96,51 +203,209 @@
       });
       player.start();
 
-      // Audio toggle
-      const audioBtn = document.getElementById('btnToggleAudio');
-      audioBtn.addEventListener('click', () => {
-        if (videoEl.muted) {
-          videoEl.muted = false;
-          audioBtn.innerText = 'Audio: Live';
-          audioBtn.style.color = 'var(--accent-green)';
-        } else {
-          videoEl.muted = true;
-          audioBtn.innerText = 'Audio: Muted';
-          audioBtn.style.color = 'inherit';
+      // Idle cursor auto-hide (2.5s)
+      const resetIdleTimer = () => {
+        document.body.classList.remove('hide-cursor');
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          const contextMenu = document.getElementById('contextMenu');
+          const isModalOpen = document.querySelector('.modal-backdrop.active');
+          if (!isModalOpen && contextMenu.style.display !== 'block') {
+            document.body.classList.add('hide-cursor');
+          }
+        }, 2500);
+      };
+      window.addEventListener('mousemove', resetIdleTimer);
+      window.addEventListener('mousedown', resetIdleTimer);
+      resetIdleTimer();
+
+      // Custom Right-Click Context Menu
+      const contextMenu = document.getElementById('contextMenu');
+      window.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        const x = Math.min(e.clientX, window.innerWidth - 240);
+        const y = Math.min(e.clientY, window.innerHeight - 280);
+        contextMenu.style.left = `${x}px`;
+        contextMenu.style.top = `${y}px`;
+        contextMenu.style.display = 'block';
+
+        // Update audio label
+        const audioLabel = document.getElementById('ctxAudioLabel');
+        if (audioLabel) {
+          audioLabel.innerText = videoEl.muted ? 'Unmute Audio' : 'Mute Audio';
         }
       });
 
-      // Fullscreen
-      document.getElementById('btnFullscreen').addEventListener('click', () => {
-        const stage = document.getElementById('videoStage');
+      // Dismiss context menu on click anywhere
+      window.addEventListener('click', (e) => {
+        if (!contextMenu.contains(e.target)) {
+          contextMenu.style.display = 'none';
+        }
+      });
+
+      // Context menu action: Toggle Fullscreen
+      document.getElementById('ctxFullscreen').addEventListener('click', () => {
+        contextMenu.style.display = 'none';
         if (!document.fullscreenElement) {
-          stage.requestFullscreen();
+          document.documentElement.requestFullscreen().catch(() => {});
         } else {
-          document.exitFullscreen();
+          document.exitFullscreen().catch(() => {});
         }
       });
 
-      // Share modal
-      const modal = document.getElementById('shareModal');
-      document.getElementById('btnShareModal').addEventListener('click', () => {
-        modal.classList.add('active');
+      // Context menu action: Toggle Audio
+      document.getElementById('ctxAudio').addEventListener('click', () => {
+        contextMenu.style.display = 'none';
+        videoEl.muted = !videoEl.muted;
+        if (!videoEl.muted) videoEl.play().catch(() => {});
+        showToast(videoEl.muted ? 'Audio Muted' : 'Audio Live');
+      });
+
+      // Context menu action: Toggle Stats
+      document.getElementById('ctxStats').addEventListener('click', () => {
+        contextMenu.style.display = 'none';
+        statsVisible = !statsVisible;
+        const overlay = document.getElementById('statsOverlay');
+        if (statsVisible) {
+          overlay.classList.add('active');
+        } else {
+          overlay.classList.remove('active');
+        }
+      });
+
+      // Context menu action: Settings Modal
+      const settingsModal = document.getElementById('settingsModal');
+      document.getElementById('ctxSettings').addEventListener('click', async () => {
+        contextMenu.style.display = 'none';
+        settingsModal.classList.add('active');
+        await loadModalSettings();
+        await scanModalSources();
+      });
+      document.getElementById('btnCloseSettingsModal').addEventListener('click', () => {
+        settingsModal.classList.remove('active');
+      });
+      document.getElementById('btnCancelSettingsModal').addEventListener('click', () => {
+        settingsModal.classList.remove('active');
+      });
+
+      // Context menu action: Share Modal
+      const shareModal = document.getElementById('shareModal');
+      document.getElementById('ctxShare').addEventListener('click', () => {
+        contextMenu.style.display = 'none';
+        shareModal.classList.add('active');
         const url = window.location.href;
         document.getElementById('modalLanUrlInput').value = url;
         document.getElementById('qrCodeContainer').innerHTML = 
           `<img src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(url)}" alt="QR Code" width="180" height="180" style="border-radius: 8px;" />`;
       });
-      document.getElementById('btnCloseModal').addEventListener('click', () => {
-        modal.classList.remove('active');
+      document.getElementById('btnCloseShareModal').addEventListener('click', () => {
+        shareModal.classList.remove('active');
       });
       document.getElementById('btnCopyUrl').addEventListener('click', () => {
         const val = document.getElementById('modalLanUrlInput').value;
         navigator.clipboard.writeText(val);
-        const toast = document.getElementById('toast');
-        toast.innerText = 'LAN URL copied to clipboard!';
-        toast.style.display = 'block';
-        setTimeout(() => toast.style.display = 'none', 3000);
+        showToast('LAN Stream URL copied!');
       });
+
+      // Unmute banner click
+      const banner = document.getElementById('unmuteBanner');
+      banner.addEventListener('click', () => {
+        videoEl.muted = false;
+        videoEl.play().catch(() => {});
+        banner.style.display = 'none';
+      });
+
+      // Modal Settings Form Save
+      document.getElementById('inlineSettingsForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const sourceName = document.getElementById('modalNdiSource').value;
+        const resVal = document.getElementById('modalResolution').value.split('x').map(Number);
+        const fps = Number(document.getElementById('modalFps').value);
+        const bitrate = Number(document.getElementById('modalBitrate').value);
+        const sampleRate = Number(document.getElementById('modalSampleRate').value);
+        const port = Number(document.getElementById('modalPort').value);
+
+        const payload = {
+          ndi: { source_name: sourceName },
+          video: { target_width: resVal[0], target_height: resVal[1], target_fps: fps, bitrate_kbps: bitrate },
+          audio: { sample_rate: sampleRate },
+          server: { http_port: port }
+        };
+
+        try {
+          const res = await fetch('/api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          if (res.ok) {
+            settingsModal.classList.remove('active');
+            showToast('Settings saved & applied!');
+            if (player) player.start();
+          }
+        } catch (err) {
+          showToast('Error saving settings: ' + err.message, true);
+        }
+      });
+
+      document.getElementById('btnModalRefreshSources').addEventListener('click', scanModalSources);
     });
+
+    async function loadModalSettings() {
+      try {
+        const res = await fetch('/api/settings');
+        const settings = await res.json();
+        if (settings.video) {
+          document.getElementById('modalResolution').value = `${settings.video.target_width}x${settings.video.target_height}`;
+          document.getElementById('modalFps').value = String(settings.video.target_fps || 0);
+          document.getElementById('modalBitrate').value = settings.video.bitrate_kbps || 6000;
+        }
+        if (settings.audio) {
+          document.getElementById('modalSampleRate').value = String(settings.audio.sample_rate || 48000);
+        }
+        if (settings.server) {
+          document.getElementById('modalPort').value = settings.server.http_port || 8080;
+        }
+      } catch (e) {}
+    }
+
+    async function scanModalSources() {
+      const select = document.getElementById('modalNdiSource');
+      const btn = document.getElementById('btnModalRefreshSources');
+      if (btn) btn.disabled = true;
+      try {
+        const res = await fetch('/api/sources');
+        const data = await res.json();
+        const curRes = await fetch('/api/settings');
+        const curSettings = await curRes.json();
+        const activeSource = curSettings.ndi ? curSettings.ndi.source_name : '';
+
+        select.innerHTML = '<option value="">-- Select NDI Source --</option>';
+        if (data.sources && data.sources.length > 0) {
+          data.sources.forEach(s => {
+            const opt = document.createElement('option');
+            opt.value = s.name;
+            opt.innerText = `${s.name} (${s.url || 'LAN'})`;
+            select.appendChild(opt);
+          });
+          if (activeSource) select.value = activeSource;
+        } else {
+          select.innerHTML = '<option value="">No active NDI sources found</option>';
+        }
+      } catch (e) {
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    function showToast(msg, isError = false) {
+      const toast = document.getElementById('toast');
+      if (!toast) return;
+      toast.innerText = msg;
+      toast.style.borderColor = isError ? 'var(--accent-red)' : 'var(--accent-cyan)';
+      toast.style.display = 'block';
+      setTimeout(() => { toast.style.display = 'none'; }, 2500);
+    }
   </script>
 </body>
 </html>
