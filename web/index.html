@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PECH NDI Stream (Zero Latency)</title>
-  <link rel="stylesheet" href="/static/style.css?v=1.0.3">
+  <link rel="stylesheet" href="/static/style.css?v=1.0.4">
 </head>
 <body class="pure-player">
   <!-- Fullscreen Edge-to-Edge Video Stage -->
@@ -143,7 +143,7 @@
           </div>
           <div class="form-group">
             <label class="form-label">HTTP Port</label>
-            <input type="number" id="modalPort" class="form-control" value="8080" />
+            <input type="number" id="modalPort" class="form-control" value="8025" />
           </div>
         </div>
 
@@ -177,7 +177,7 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="/static/player.js?v=1.0.3"></script>
+  <script src="/static/player.js?v=1.0.4"></script>
   <script>
     let player = null;
     let idleTimer = null;
@@ -364,7 +364,7 @@
           document.getElementById('modalSampleRate').value = String(settings.audio.sample_rate || 48000);
         }
         if (settings.server) {
-          document.getElementById('modalPort').value = settings.server.http_port || 8080;
+          document.getElementById('modalPort').value = settings.server.http_port || 8025;
         }
       } catch (e) {}
     }

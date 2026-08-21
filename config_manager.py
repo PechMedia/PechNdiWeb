@@ -12,7 +12,7 @@ logger = logging.getLogger("config_manager")
 
 DEFAULT_SETTINGS = {
     "server": {
-        "http_port": 8080,
+        "http_port": 8025,
         "bind_address": "0.0.0.0",
     },
     "ndi": {

@@ -1,6 +1,6 @@
 {
   "server": {
-    "http_port": 8088,
+    "http_port": 8025,
     "bind_address": "0.0.0.0"
   },
   "ndi": {

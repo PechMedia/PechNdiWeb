@@ -10,7 +10,7 @@ import sys
 logger = logging.getLogger("ui_app")
 
 
-def launch_ui(port=8080, title="PECH NDI-to-WebRTC Bridge"):
+def launch_ui(port=8025, title="PECH NDI-to-WebRTC Bridge"):
     """Launches the desktop GUI window using Windows WebView2."""
     url = f"http://localhost:{port}/admin"
     logger.info(f"Opening desktop UI window at {url}...")

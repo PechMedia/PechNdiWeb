@@ -80,7 +80,7 @@ function populateForm(settings) {
 
   if (settings.server) {
     const portInput = document.getElementById('httpPortInput');
-    if (portInput) portInput.value = settings.server.http_port || 8080;
+    if (portInput) portInput.value = settings.server.http_port || 8025;
   }
 }
 
@@ -141,7 +141,7 @@ async function saveSettings(e) {
   const targetFps = Number(document.getElementById('fpsSelect')?.value || 0);
   const bitrate = Number(document.getElementById('bitrateInput')?.value || 6000);
   const sampleRate = Number(document.getElementById('audioSampleRate')?.value || 48000);
-  const port = Number(document.getElementById('httpPortInput')?.value || 8080);
+  const port = Number(document.getElementById('httpPortInput')?.value || 8025);
 
   const payload = {
     ndi: {

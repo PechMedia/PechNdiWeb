@@ -60,7 +60,7 @@ Run with the `--headless` switch to start as a lightweight background server wit
 | Flag | Description | Example |
 | :--- | :--- | :--- |
 | `--headless` | Runs without desktop window (CLI/service mode) | `.\PECH_NDI_WebRTC.exe --headless` |
-| `--port <PORT>` | Sets HTTP web and WebRTC signaling port (default: `8080`) | `.\PECH_NDI_WebRTC.exe --headless --port 8080` |
+| `--port <PORT>` | Sets HTTP web and WebRTC signaling port (default: `8025`) | `.\PECH_NDI_WebRTC.exe --headless --port 8025` |
 | `--source "<NAME>"` | Specifies the exact NDI stream source name to decode | `.\PECH_NDI_WebRTC.exe --headless --source "STUDIO-PC (Camera 1)"` |
 | `--config <PATH>` | Custom path to JSON configuration file | `.\PECH_NDI_WebRTC.exe --headless --config custom_settings.json` |
 | `--bind <IP>` | Binds server to specific network interface IP | `.\PECH_NDI_WebRTC.exe --headless --bind 0.0.0.0` |
@@ -74,7 +74,7 @@ Run with the `--headless` switch to start as a lightweight background server wit
 ```json
 {
   "server": {
-    "http_port": 8080,
+    "http_port": 8025,
     "bind_address": "0.0.0.0"
   },
   "ndi": {
@@ -109,9 +109,9 @@ Run with the `--headless` switch to start as a lightweight background server wit
 1. Connect viewing devices (iPhones, Android phones, iPads, PCs, Macs) to the **same Wi-Fi or Ethernet network**.
 2. Open any browser (Chrome, Safari, Edge, Firefox) and navigate to:
    ```text
-   http://<WINDOWS_PC_IP>:8080
+   http://<WINDOWS_PC_IP>:8025
    ```
-   *(Example: `http://192.168.1.40:8080`)*
+   *(Example: `http://192.168.1.40:8025`)*
 3. **Mobile Devices**: Scan the QR code displayed in the Desktop UI or click **"Share LAN URL"** to view instantly.
 4. **Audio**: Click **"Unmute Audio"** when prompted by the browser.
 

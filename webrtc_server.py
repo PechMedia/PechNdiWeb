@@ -272,7 +272,7 @@ class WebRTCStreamServer:
 
     async def _handle_status(self, request):
         local_ip = get_local_ip()
-        port = self.config.get("server", "http_port", 8080)
+        port = self.config.get("server", "http_port", 8025)
         with self.receiver._lock:
             stats = dict(self.receiver.stats)
 
@@ -411,7 +411,7 @@ class WebRTCStreamServer:
         return ws
 
     async def start(self):
-        port = self.config.get("server", "http_port", 8080)
+        port = self.config.get("server", "http_port", 8025)
         host = self.config.get("server", "bind_address", "0.0.0.0")
 
         # Auto-start NDI receiver if enabled

@@ -38,7 +38,7 @@ def parse_args():
         "--port",
         type=int,
         default=None,
-        help="Override HTTP / WebRTC port (default from settings.json or 8080)",
+        help="Override HTTP / WebRTC port (default from settings.json or 8025)",
     )
     parser.add_argument(
         "--source",
@@ -115,7 +115,7 @@ def main():
     if updates:
         config.update(updates)
 
-    port = config.get("server", "http_port", 8080)
+    port = config.get("server", "http_port", 8025)
     server = WebRTCStreamServer(config, web_dir)
 
     print("=" * 60)

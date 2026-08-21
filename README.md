@@ -36,10 +36,10 @@ Double-click `PECH_NDI_WebRTC.exe` or run:
 
 #### CLI Options
 ```powershell
-.\PECH_NDI_WebRTC.exe --headless --port 8080 --source "STUDIO-PC (Camera 1)"
+.\PECH_NDI_WebRTC.exe --headless --port 8025 --source "STUDIO-PC (Camera 1)"
 ```
 - `--headless`: Run as a background service/daemon without UI.
-- `--port <PORT>`: Web / WebRTC signaling port (default: 8080).
+- `--port <PORT>`: Web / WebRTC signaling port (default: 8025).
 - `--source "<NAME>"`: Override NDI source name.
 - `--config <PATH>`: Custom path to JSON configuration file.
 - `--bind <IP>`: IP address to bind to (default: `0.0.0.0`).
