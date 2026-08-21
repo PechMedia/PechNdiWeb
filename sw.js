@@ -1,4 +1,4 @@
-const APP_VERSION = '1.0.1';
+const APP_VERSION = '1.0.2';
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
@@ -9,5 +9,6 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
+  // Direct pass-through for WebRTC signaling and real-time media
   event.respondWith(fetch(event.request));
 });

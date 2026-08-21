@@ -145,6 +145,7 @@ class NDIVideoTrack(VideoStreamTrack):
 class NDIAudioTrack(AudioStreamTrack):
     """
     Low latency Audio Track that bridges NDI audio into WebRTC (Opus).
+    Formats signed 16-bit interleaved PCM with sample-accurate timestamps.
     """
     kind = "audio"
 
@@ -158,6 +159,7 @@ class NDIAudioTrack(AudioStreamTrack):
         self._time_base = fractions.Fraction(1, self._clock_rate)
         self._start_time = None
         self._last_pts = 0
+        self._samples_per_frame = 960  # 20ms at 48kHz
 
     async def recv(self):
         if self._start_time is None:
@@ -167,42 +169,54 @@ class NDIAudioTrack(AudioStreamTrack):
         with self.receiver._lock:
             audio_info = self.receiver.latest_audio_frame
 
-        # Opus typically consumes 960 samples per frame (20ms at 48kHz)
-        samples_per_frame = 960
-
+        samples = self._samples_per_frame
         now = time.perf_counter()
         elapsed = now - self._start_time
         pts = int(elapsed * self._clock_rate)
         if pts <= self._last_pts:
-            pts = self._last_pts + samples_per_frame
+            pts = self._last_pts + samples
         self._last_pts = pts
+
+        frame = av.AudioFrame(format="s16", layout="stereo", samples=samples)
+        frame.sample_rate = self._sample_rate
+        frame.pts = pts
+        frame.time_base = self._time_base
 
         if audio_info and (now - audio_info.get("receive_time", 0)) < 0.5:
             try:
                 data = audio_info["data"]  # (channels, samples) float32
                 channels = audio_info["channels"]
-                samples = audio_info["samples"]
+                total_samples = audio_info["samples"]
 
-                if samples >= samples_per_frame:
-                    chunk = data[:2, :samples_per_frame]
+                if total_samples >= samples:
+                    left = data[0, :samples]
+                    right = data[1, :samples] if channels > 1 else left
                 else:
-                    chunk = np.zeros((2, samples_per_frame), dtype=np.float32)
-                    chunk[:min(channels, 2), :samples] = data[:min(channels, 2), :]
+                    left = np.zeros(samples, dtype=np.float32)
+                    right = np.zeros(samples, dtype=np.float32)
+                    left[:total_samples] = data[0, :total_samples]
+                    if channels > 1:
+                        right[:total_samples] = data[1, :total_samples]
+                    else:
+                        right[:total_samples] = left[:total_samples]
 
-                frame = av.AudioFrame.from_ndarray(chunk, format="fltp", layout="stereo")
-                frame.sample_rate = self._sample_rate
-                frame.pts = pts
-                frame.time_base = self._time_base
+                # Convert float32 [-1.0, 1.0] to int16 [-32767, 32767]
+                left_i16 = (np.clip(left, -1.0, 1.0) * 32767.0).astype(np.int16)
+                right_i16 = (np.clip(right, -1.0, 1.0) * 32767.0).astype(np.int16)
+
+                # Interleave stereo: [L0, R0, L1, R1, ...]
+                interleaved = np.empty(samples * 2, dtype=np.int16)
+                interleaved[0::2] = left_i16
+                interleaved[1::2] = right_i16
+
+                frame.planes[0].update(interleaved.tobytes())
                 return frame
             except Exception as e:
                 logger.warning(f"Error packing audio frame: {e}")
 
-        # Silence packet
-        silence = np.zeros((2, samples_per_frame), dtype=np.float32)
-        frame = av.AudioFrame.from_ndarray(silence, format="fltp", layout="stereo")
-        frame.sample_rate = self._sample_rate
-        frame.pts = pts
-        frame.time_base = self._time_base
+        # Silence packet (s16 zeroes)
+        silence = np.zeros(samples * 2, dtype=np.int16)
+        frame.planes[0].update(silence.tobytes())
         return frame
 
 
