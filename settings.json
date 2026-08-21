@@ -1,0 +1,28 @@
+{
+  "server": {
+    "http_port": 8088,
+    "bind_address": "0.0.0.0"
+  },
+  "ndi": {
+    "source_name": "",
+    "color_format": "BGRX",
+    "low_bandwidth": false
+  },
+  "video": {
+    "target_width": 0,
+    "target_height": 0,
+    "target_fps": 0,
+    "bitrate_kbps": 6000,
+    "codec": "H264"
+  },
+  "audio": {
+    "channels": 2,
+    "sample_rate": 48000,
+    "bitrate_kbps": 128,
+    "codec": "opus"
+  },
+  "app": {
+    "auto_start": true,
+    "title": "PECH NDI-to-WebRTC Bridge"
+  }
+}

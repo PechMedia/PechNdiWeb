@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PECH NDI WebRTC Live Player (Zero Latency)</title>
+  <link rel="stylesheet" href="/static/style.css?v=1.0.0">
+</head>
+<body>
+  <header>
+    <div class="logo-container">
+      <div class="logo-badge">NDI &rarr; WebRTC</div>
+      <div class="logo-title">PECH Ultra-Low Latency Player</div>
+    </div>
+    <div class="header-actions">
+      <div class="status-pill">
+        <div id="statusDot" class="status-dot connecting"></div>
+        <span id="statusText">Connecting...</span>
+      </div>
+      <a href="/admin" class="btn btn-secondary btn-sm" id="btnAdminLink">Admin / Config</a>
+      <button class="btn btn-secondary btn-sm" id="btnShareModal">Share LAN URL</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="player-layout">
+      <div class="video-stage-container" id="videoStage">
+        <video id="remoteVideo" autoplay playsinline muted></video>
+
+        <!-- Unmute prompt banner if browser blocks autoplay audio -->
+        <div id="unmuteBanner" class="unmute-banner" style="display: none;">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+          </svg>
+          <div>Click here to unmute audio</div>
+        </div>
+
+        <!-- Overlays -->
+        <div class="video-overlay-top">
+          <div class="overlay-stats">
+            <div class="stat-tag" id="statFps">-- FPS</div>
+            <div class="stat-tag" id="statRes">-- x --</div>
+            <div class="stat-tag" id="statBitrate">-- kbps</div>
+            <div class="stat-tag" style="color: var(--accent-green);">&lt;50ms Latency</div>
+          </div>
+        </div>
+
+        <div class="video-overlay-controls">
+          <button class="btn btn-secondary btn-sm" id="btnToggleAudio">Audio: Muted</button>
+          <button class="btn btn-secondary btn-sm" id="btnFullscreen">Fullscreen</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Share Modal -->
+  <div class="modal-backdrop" id="shareModal">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>Connect Any Device on LAN</h3>
+        <button class="btn btn-secondary btn-sm" id="btnCloseModal">&times;</button>
+      </div>
+      <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
+        Scan this QR code with your mobile camera or open the link on any browser connected to the same Wi-Fi network.
+      </p>
+      <div class="qr-wrapper">
+        <div id="qrCodeContainer" class="qr-code-box"></div>
+      </div>
+      <div class="url-copy-box">
+        <input type="text" id="modalLanUrlInput" class="form-control" readonly />
+        <button class="btn btn-primary" id="btnCopyUrl">Copy</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="/static/player.js?v=1.0.0"></script>
+  <script>
+    let player = null;
+    document.addEventListener('DOMContentLoaded', () => {
+      const videoEl = document.getElementById('remoteVideo');
+      player = new NDIWebRTCPlayer(videoEl, {
+        onStatusChange: (status, msg) => {
+          const dot = document.getElementById('statusDot');
+          const txt = document.getElementById('statusText');
+          if (dot) dot.className = 'status-dot ' + status;
+          if (txt) txt.innerText = msg;
+        },
+        onStatsUpdate: (stats) => {
+          if (stats.fps) document.getElementById('statFps').innerText = `${stats.fps} FPS`;
+          if (stats.width) document.getElementById('statRes').innerText = `${stats.width}x${stats.height}`;
+          if (stats.bitrate) document.getElementById('statBitrate').innerText = `${stats.bitrate} kbps`;
+        }
+      });
+      player.start();
+
+      // Audio toggle
+      const audioBtn = document.getElementById('btnToggleAudio');
+      audioBtn.addEventListener('click', () => {
+        if (videoEl.muted) {
+          videoEl.muted = false;
+          audioBtn.innerText = 'Audio: Live';
+          audioBtn.style.color = 'var(--accent-green)';
+        } else {
+          videoEl.muted = true;
+          audioBtn.innerText = 'Audio: Muted';
+          audioBtn.style.color = 'inherit';
+        }
+      });
+
+      // Fullscreen
+      document.getElementById('btnFullscreen').addEventListener('click', () => {
+        const stage = document.getElementById('videoStage');
+        if (!document.fullscreenElement) {
+          stage.requestFullscreen();
+        } else {
+          document.exitFullscreen();
+        }
+      });
+
+      // Share modal
+      const modal = document.getElementById('shareModal');
+      document.getElementById('btnShareModal').addEventListener('click', () => {
+        modal.classList.add('active');
+        const url = window.location.href;
+        document.getElementById('modalLanUrlInput').value = url;
+        document.getElementById('qrCodeContainer').innerHTML = 
+          `<img src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(url)}" alt="QR Code" width="180" height="180" style="border-radius: 8px;" />`;
+      });
+      document.getElementById('btnCloseModal').addEventListener('click', () => {
+        modal.classList.remove('active');
+      });
+      document.getElementById('btnCopyUrl').addEventListener('click', () => {
+        const val = document.getElementById('modalLanUrlInput').value;
+        navigator.clipboard.writeText(val);
+        const toast = document.getElementById('toast');
+        toast.innerText = 'LAN URL copied to clipboard!';
+        toast.style.display = 'block';
+        setTimeout(() => toast.style.display = 'none', 3000);
+      });
+    });
+  </script>
+</body>
+</html>
