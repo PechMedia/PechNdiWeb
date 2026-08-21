@@ -220,6 +220,25 @@ class NDIAudioTrack(AudioStreamTrack):
         return frame
 
 
+@web.middleware
+async def cors_middleware(request: web.Request, handler):
+    """Global CORS and Private Network Access middleware."""
+    if request.method == "OPTIONS":
+        response = web.Response(status=204)
+    else:
+        try:
+            response = await handler(request)
+        except web.HTTPException as ex:
+            response = ex
+
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    response.headers["Access-Control-Allow-Private-Network"] = "true"
+    response.headers["Access-Control-Max-Age"] = "86400"
+    return response
+
+
 class WebRTCStreamServer:
     """
     Full WebRTC Server managing NDI Ingestion, Peer Connections, WHEP & WebSocket signaling,
@@ -235,12 +254,15 @@ class WebRTCStreamServer:
         )
         self.pcs: Set[RTCPeerConnection] = set()
         self.finder = None
-        self.app = web.Application()
+        self.app = web.Application(middlewares=[cors_middleware])
         self.runner = None
         self.site = None
         self._setup_routes()
 
     def _setup_routes(self):
+        # Options preflight handler
+        self.app.router.add_route("OPTIONS", "/{tail:.*}", self._handle_options)
+
         # API Routes
         self.app.router.add_get("/api/status", self._handle_status)
         self.app.router.add_get("/api/sources", self._handle_sources)
@@ -249,14 +271,27 @@ class WebRTCStreamServer:
         self.app.router.add_post("/api/stream/start", self._handle_stream_start)
         self.app.router.add_post("/api/stream/stop", self._handle_stream_stop)
 
-        # Signaling Routes
+        # Signaling Routes (WHEP on /api/whep and root /)
         self.app.router.add_post("/api/whep", self._handle_whep)
+        self.app.router.add_post("/", self._handle_whep)
         self.app.router.add_get("/ws", self._handle_websocket)
 
         # Static Web App
         self.app.router.add_static("/static", os.path.join(self.web_dir, "static"), name="static")
         self.app.router.add_get("/", self._handle_index)
         self.app.router.add_get("/admin", self._handle_admin)
+
+    async def _handle_options(self, request):
+        return web.Response(
+            status=204,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Allow-Private-Network": "true",
+                "Access-Control-Max-Age": "86400",
+            },
+        )
 
     async def _handle_index(self, request):
         index_file = os.path.join(self.web_dir, "index.html")
@@ -369,7 +404,8 @@ class WebRTCStreamServer:
             "Content-Type": "application/sdp",
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Allow-Private-Network": "true",
         }
         return web.Response(text=pc.localDescription.sdp, headers=response_headers, status=201)
 
