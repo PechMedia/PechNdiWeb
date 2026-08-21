@@ -31,6 +31,71 @@ from config_manager import ConfigManager
 
 logger = logging.getLogger("webrtc_server")
 
+import datetime
+import ipaddress
+import ssl
+from cryptography import x509
+from cryptography.x509.oid import NameOID
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import serialization
+
+
+def ensure_ssl_certificates(cert_path="cert.pem", key_path="key.pem", ip="127.0.0.1"):
+    """Auto-generates self-signed TLS certificates with SAN for localhost and local IP."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    cert_full = os.path.join(base_dir, cert_path)
+    key_full = os.path.join(base_dir, key_path)
+
+    if os.path.exists(cert_full) and os.path.exists(key_full):
+        return cert_full, key_full
+
+    try:
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        name = x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, "PECH NDI Bridge"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "PechMedia"),
+        ])
+        
+        san_list = [
+            x509.DNSName("localhost"),
+            x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
+        ]
+        if ip and ip not in ("127.0.0.1", "0.0.0.0"):
+            try:
+                san_list.append(x509.IPAddress(ipaddress.IPv4Address(ip)))
+            except Exception:
+                pass
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(name)
+            .issuer_name(name)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now)
+            .not_valid_after(now + datetime.timedelta(days=3650))
+            .add_extension(x509.SubjectAlternativeName(san_list), critical=False)
+            .sign(key, hashes.SHA256())
+        )
+
+        with open(key_full, "wb") as f:
+            f.write(key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.TraditionalOpenSSL,
+                encryption_algorithm=serialization.NoEncryption(),
+            ))
+
+        with open(cert_full, "wb") as f:
+            f.write(cert.public_bytes(serialization.Encoding.PEM))
+
+        return cert_full, key_full
+    except Exception as e:
+        logger.warning(f"Failed to auto-generate SSL certs: {e}")
+        return cert_full, key_full
+
+
 
 def get_local_ip():
     """Finds the primary local network IPv4 address."""
@@ -257,6 +322,7 @@ class WebRTCStreamServer:
         self.app = web.Application(middlewares=[cors_middleware])
         self.runner = None
         self.site = None
+        self.https_site = None
         self._setup_routes()
 
     def _setup_routes(self):
@@ -459,14 +525,32 @@ class WebRTCStreamServer:
 
         self.runner = web.AppRunner(self.app)
         await self.runner.setup()
+
+        # HTTP Site (port 8025)
         self.site = web.TCPSite(self.runner, host, port)
         await self.site.start()
 
         local_ip = get_local_ip()
+        https_port = self.config.get("server", "https_port", port + 1)
+        has_https = False
+        try:
+            cert_path, key_path = ensure_ssl_certificates(ip=local_ip)
+            if os.path.exists(cert_path) and os.path.exists(key_path):
+                ssl_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+                ssl_ctx.load_cert_chain(cert_path, key_path)
+                self.https_site = web.TCPSite(self.runner, host, https_port, ssl_context=ssl_ctx)
+                await self.https_site.start()
+                has_https = True
+        except Exception as e:
+            logger.warning(f"Could not start HTTPS listener on port {https_port}: {e}")
+
         logger.info(f"==================================================")
         logger.info(f" PECH NDI WebRTC Server is RUNNING")
-        logger.info(f" Local Web View:   http://localhost:{port}")
-        logger.info(f" Network Web View: http://{local_ip}:{port}")
+        logger.info(f" HTTP Local:       http://localhost:{port}")
+        logger.info(f" HTTP Network:     http://{local_ip}:{port}")
+        if has_https:
+            logger.info(f" HTTPS Network:    https://{local_ip}:{https_port}")
+            logger.info(f" HTTPS WHEP:       https://{local_ip}:{https_port}/api/whep")
         logger.info(f" Admin Dashboard:  http://{local_ip}:{port}/admin")
         logger.info(f"==================================================")
 
@@ -481,6 +565,8 @@ class WebRTCStreamServer:
             self.finder.close()
             self.finder = None
 
+        if self.https_site:
+            await self.https_site.stop()
         if self.site:
             await self.site.stop()
         if self.runner:
