@@ -181,10 +181,12 @@ class NDIVideoTrack(VideoStreamTrack):
                 if fourcc == FOURCC_UYVY:
                     row_bytes = width * 2
                     if stride == row_bytes:
-                        img_arr = raw_data.reshape((height, width, 2))
+                        byte_data = raw_data[:height * row_bytes].tobytes()
                     else:
                         img_arr = raw_data.reshape((height, stride // 2, 2))[:, :width, :]
-                    video_frame = av.VideoFrame.from_ndarray(img_arr, format="uyvy422")
+                        byte_data = img_arr.tobytes()
+                    video_frame = av.VideoFrame(width, height, format="uyvy422")
+                    video_frame.planes[0].update(byte_data)
                 elif fourcc in (FOURCC_BGRX, FOURCC_BGRA):
                     # Direct 4-channel BGR0 / BGRA with zero-copy bgr0 packing
                     row_bytes = width * 4
