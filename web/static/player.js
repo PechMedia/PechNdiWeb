@@ -53,8 +53,14 @@ class NDIWebRTCPlayer {
       if (this.pc !== pc) return;
       if (this.video.srcObject !== evt.streams[0]) {
         this.video.srcObject = evt.streams[0];
+        // Attempt to play with audio first
+        this.video.muted = false;
         this.video.play().catch(e => {
           console.log('Autoplay blocked, user gesture needed for audio:', e);
+          // Fallback to muted so video at least plays
+          this.video.muted = true;
+          this.video.play().catch(err => console.log('Muted autoplay blocked:', err));
+          
           const banner = document.getElementById('unmuteBanner');
           if (banner) banner.style.display = 'flex';
         });
@@ -137,7 +143,14 @@ class NDIWebRTCPlayer {
       if (this.pc !== pc) return;
       if (this.video.srcObject !== evt.streams[0]) {
         this.video.srcObject = evt.streams[0];
-        this.video.play().catch(e => console.log('Autoplay audio interaction needed:', e));
+        this.video.muted = false;
+        this.video.play().catch(e => {
+          console.log('Autoplay audio interaction needed:', e);
+          this.video.muted = true;
+          this.video.play().catch(err => {});
+          const banner = document.getElementById('unmuteBanner');
+          if (banner) banner.style.display = 'flex';
+        });
       }
     };
 
