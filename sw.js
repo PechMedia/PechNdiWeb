@@ -1,4 +1,4 @@
-const APP_VERSION = '1.0.7';
+const APP_VERSION = '1.0.8';
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();

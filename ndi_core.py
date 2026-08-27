@@ -238,7 +238,7 @@ class NDIFinder:
 class NDIReceiver:
     """Receives and extracts uncompressed video/audio frames from a selected NDI source."""
 
-    def __init__(self, source_name=None, color_format=NDILIB_RECV_COLOR_FORMAT_BGRX_BGRA, low_bandwidth=False):
+    def __init__(self, source_name=None, color_format=NDILIB_RECV_COLOR_FORMAT_FASTEST, low_bandwidth=False):
         self.sdk = NDISDK.get_instance()
         self.source_name = source_name
         self.color_format = color_format
@@ -270,6 +270,8 @@ class NDIReceiver:
         self.on_video_frame = None
         self.on_audio_frame = None
         self._lock = threading.Lock()
+        self._audio_lock = threading.Lock()
+        self.audio_pcm_buffer = bytearray()
         self.stats = {
             "fps": 0.0,
             "width": 0,
@@ -387,25 +389,26 @@ class NDIReceiver:
                     else:
                         planar = raw_audio[: channels * samples].reshape((channels, samples))
 
-                    audio_info = {
-                        "sample_rate": sample_rate,
-                        "channels": channels,
-                        "samples": samples,
-                        "timestamp": a_frame.timestamp,
-                        "data": planar.copy(),
-                        "receive_time": now,
-                    }
+                    # Convert planar float32 [-1.0, 1.0] directly to int16 stereo interleaved
+                    left = planar[0]
+                    right = planar[1] if channels > 1 else left
+                    left_i16 = (np.clip(left, -1.0, 1.0) * 32767.0).astype(np.int16)
+                    right_i16 = (np.clip(right, -1.0, 1.0) * 32767.0).astype(np.int16)
+                    interleaved = np.empty(samples * 2, dtype=np.int16)
+                    interleaved[0::2] = left_i16
+                    interleaved[1::2] = right_i16
+                    pcm_bytes = interleaved.tobytes()
+
+                    with self._audio_lock:
+                        self.audio_pcm_buffer.extend(pcm_bytes)
+                        # Cap buffer to max 0.20s (48000 * 2ch * 2bytes * 0.20 = 38400 bytes) to maintain sub-50ms latency
+                        max_buf_bytes = 38400
+                        if len(self.audio_pcm_buffer) > max_buf_bytes:
+                            del self.audio_pcm_buffer[:-max_buf_bytes]
 
                     with self._lock:
-                        self.latest_audio_frame = audio_info
                         self.stats["audio_samples_received"] += samples
                         self.stats["connected"] = True
-
-                    if self.on_audio_frame:
-                        try:
-                            self.on_audio_frame(audio_info)
-                        except Exception as e:
-                            logger.error(f"Error in on_audio_frame callback: {e}")
 
                 self.sdk.dll.NDIlib_recv_free_audio_v2(self._p_recv, byref(a_frame))
 

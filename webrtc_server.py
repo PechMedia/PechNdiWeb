@@ -128,6 +128,7 @@ class NDIVideoTrack(VideoStreamTrack):
         self._clock_rate = 90000
         self._time_base = fractions.Fraction(1, self._clock_rate)
         self._standby_frame = None
+        self._last_processed_receive_time = 0.0
 
     def _create_standby_frame(self, width=1280, height=720, text="NO NDI SOURCE"):
         """Generates a placeholder dark test card when no source is connected."""
@@ -143,14 +144,23 @@ class NDIVideoTrack(VideoStreamTrack):
         if self._start_time is None:
             self._start_time = time.perf_counter()
 
-        # Wait up to 33ms for fresh frame
+        # Wait up to 100ms for a new fresh frame
         frame_info = None
-        for _ in range(7):
+        for _ in range(20):
             with self.receiver._lock:
-                frame_info = self.receiver.latest_video_frame
-            if frame_info and (time.perf_counter() - frame_info.get("receive_time", 0)) < 0.5:
+                fi = self.receiver.latest_video_frame
+            if fi and fi.get("receive_time", 0) > getattr(self, '_last_processed_receive_time', 0):
+                frame_info = fi
+                self._last_processed_receive_time = frame_info["receive_time"]
                 break
             await asyncio.sleep(0.005)
+
+        if not frame_info:
+            # If no new frame, check if we can reuse the last frame if it's recent (e.g. within 1 second)
+            with self.receiver._lock:
+                fi = self.receiver.latest_video_frame
+            if fi and (time.perf_counter() - fi.get("receive_time", 0)) < 1.0:
+                frame_info = fi
 
         now = time.perf_counter()
         elapsed = now - self._start_time
@@ -168,16 +178,21 @@ class NDIVideoTrack(VideoStreamTrack):
                 fourcc = frame_info["fourcc"]
 
                 # Handle BGRX / BGRA / UYVY formats
-                if fourcc in (FOURCC_BGRX, FOURCC_BGRA):
-                    # Direct 4-channel BGR0 / BGRA
+                if fourcc == FOURCC_UYVY:
+                    row_bytes = width * 2
+                    if stride == row_bytes:
+                        img_arr = raw_data.reshape((height, width, 2))
+                    else:
+                        img_arr = raw_data.reshape((height, stride // 2, 2))[:, :width, :]
+                    video_frame = av.VideoFrame.from_ndarray(img_arr, format="uyvy422")
+                elif fourcc in (FOURCC_BGRX, FOURCC_BGRA):
+                    # Direct 4-channel BGR0 / BGRA with zero-copy bgr0 packing
                     row_bytes = width * 4
                     if stride == row_bytes:
                         img_arr = raw_data.reshape((height, width, 4))
                     else:
                         img_arr = raw_data.reshape((height, stride // 4, 4))[:, :width, :]
-                    
-                    # Convert to VideoFrame directly (av format 'bgr0' or 'bgra')
-                    video_frame = av.VideoFrame.from_ndarray(img_arr[:, :, :3], format="bgr24")
+                    video_frame = av.VideoFrame.from_ndarray(img_arr, format="bgr0")
                 elif fourcc in (FOURCC_RGBA, FOURCC_RGBX):
                     row_bytes = width * 4
                     if stride == row_bytes:
@@ -229,64 +244,46 @@ class NDIAudioTrack(AudioStreamTrack):
         self._time_base = fractions.Fraction(1, self._clock_rate)
         self._start_time = None
         self._last_pts = 0
+        self._audio_pts = 0
         self._samples_per_frame = 960  # 20ms at 48kHz
 
     async def recv(self):
         if self._start_time is None:
             self._start_time = time.perf_counter()
-
-        audio_info = None
-        with self.receiver._lock:
-            audio_info = self.receiver.latest_audio_frame
+            self._audio_pts = 0
 
         samples = self._samples_per_frame
-        now = time.perf_counter()
-        elapsed = now - self._start_time
-        pts = int(elapsed * self._clock_rate)
-        if pts <= self._last_pts:
-            pts = self._last_pts + samples
-        self._last_pts = pts
+        
+        # Calculate monotonic PTS based on exact sample count
+        pts = self._audio_pts
+        self._audio_pts += samples
 
         frame = av.AudioFrame(format="s16", layout="stereo", samples=samples)
         frame.sample_rate = self._sample_rate
         frame.pts = pts
         frame.time_base = self._time_base
 
-        if audio_info and (now - audio_info.get("receive_time", 0)) < 0.5:
-            try:
-                data = audio_info["data"]  # (channels, samples) float32
-                channels = audio_info["channels"]
-                total_samples = audio_info["samples"]
+        # 960 samples * 2 channels * 2 bytes/sample = 3840 bytes per 20ms frame
+        bytes_needed = samples * 4
+        
+        # Wait for audio data (up to 100ms) to ensure we don't spin CPU on empty buffers
+        chunk = None
+        for _ in range(10):
+            if hasattr(self.receiver, "_audio_lock") and hasattr(self.receiver, "audio_pcm_buffer"):
+                with self.receiver._audio_lock:
+                    if len(self.receiver.audio_pcm_buffer) >= bytes_needed:
+                        chunk = bytes(self.receiver.audio_pcm_buffer[:bytes_needed])
+                        del self.receiver.audio_pcm_buffer[:bytes_needed]
+                        break
+            await asyncio.sleep(0.01)
 
-                if total_samples >= samples:
-                    left = data[0, :samples]
-                    right = data[1, :samples] if channels > 1 else left
-                else:
-                    left = np.zeros(samples, dtype=np.float32)
-                    right = np.zeros(samples, dtype=np.float32)
-                    left[:total_samples] = data[0, :total_samples]
-                    if channels > 1:
-                        right[:total_samples] = data[1, :total_samples]
-                    else:
-                        right[:total_samples] = left[:total_samples]
+        if chunk and len(chunk) == bytes_needed:
+            frame.planes[0].update(chunk)
+            return frame
 
-                # Convert float32 [-1.0, 1.0] to int16 [-32767, 32767]
-                left_i16 = (np.clip(left, -1.0, 1.0) * 32767.0).astype(np.int16)
-                right_i16 = (np.clip(right, -1.0, 1.0) * 32767.0).astype(np.int16)
-
-                # Interleave stereo: [L0, R0, L1, R1, ...]
-                interleaved = np.empty(samples * 2, dtype=np.int16)
-                interleaved[0::2] = left_i16
-                interleaved[1::2] = right_i16
-
-                frame.planes[0].update(interleaved.tobytes())
-                return frame
-            except Exception as e:
-                logger.warning(f"Error packing audio frame: {e}")
-
-        # Silence packet (s16 zeroes)
-        silence = np.zeros(samples * 2, dtype=np.int16)
-        frame.planes[0].update(silence.tobytes())
+        # Silence fallback if buffer empty
+        silence = b"\x00" * bytes_needed
+        frame.planes[0].update(silence)
         return frame
 
 
