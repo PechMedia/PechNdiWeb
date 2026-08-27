@@ -79,7 +79,7 @@ Run with the `--headless` switch to start as a lightweight background server wit
   },
   "ndi": {
     "source_name": "STUDIO-PC (Camera 1)",
-    "color_format": "BGRX",
+    "color_format": "FASTEST",
     "low_bandwidth": false
   },
   "video": {
