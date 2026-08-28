@@ -1,6 +1,6 @@
 # PECH NDI-to-WebRTC Bridge — Application Specification
 
-**Version:** 1.0.11 · **Platform:** Windows 10/11 x64 · **Language:** Python 3.12 · **Packaging:** single-file PyInstaller exe (`PECH_NDI_WebRTC.exe`)
+**Version:** 1.0.12 · **Platform:** Windows 10/11 x64 · **Language:** Python 3.12 · **Packaging:** single-file PyInstaller exe (`PECH_NDI_WebRTC.exe`)
 
 ## 1. Purpose
 
@@ -81,7 +81,7 @@ pywebview window: 1280×820 (min 900×600), loads `http://localhost:<port>/admin
 - **`static/player.js`** — `NDIWebRTCPlayer` class: signaling tries **WebSocket `/ws` first, falls back to WHEP**; recvonly transceivers; autoplay-policy handling (try unmuted → fall back to muted + banner, the v1.0.10 fix); `getStats()` polling every 1 s (fps/res/bitrate/jitter); auto-reconnect every 2.5 s on disconnect/failure.
 - **`static/admin.js`** — settings load/save, source discovery, stream start/stop, `/api/status` polling every 2 s, QR share, fullscreen.
 - **`static/style.css`** — dark dashboard theme (560 lines).
-- **Root-level legacy files**: `receiver.html` (minimal player page, **not served by any route** — only `web/` is bundled/routed), `sw.js` (pass-through service worker, not registered by any page) and `config.js` (`APP_VERSION = '1.0.10'`, not imported) — kept only because the versioning rule in `CLAUDE.md` references them. Cache-busting is done via `?v=1.0.10` query strings in the HTML.
+- **Root-level legacy files**: `receiver.html` (minimal player page, **not served by any route** — only `web/` is bundled/routed), `sw.js` (pass-through service worker, not registered by any page) and `config.js` (`APP_VERSION = '1.0.12'`, not imported) — kept only because the versioning rule in `CLAUDE.md` references them. Cache-busting is done via `?v=1.0.12` query strings in the HTML.
 
 ## 4. HTTP / Signaling API
 
@@ -121,7 +121,7 @@ Peer connections use `iceServers=[]` (LAN host candidates only).
 | `ndi.low_bandwidth` | `false` | Yes, but only at receiver creation (restart) |
 | `video.target_width/height` | `0` (= native) | Yes (live `reformat`) |
 | `video.target_fps` | `0` | Yes — track paces output to this rate (0 = native source pacing) |
-| `video.bitrate_kbps` | `6000` | **No** — never applied to RTP sender (aiortc defaults govern) |
+| `video.bitrate_kbps` | `6000` | Yes — sets the aiortc H.264/VP8 encoder start and ceiling bitrate (module globals; REMB still adapts within range) |
 | `video.codec` | `"H264"` | **No** — codec comes from SDP negotiation/aiortc availability |
 | `audio.sample_rate/channels/bitrates` | 48000 / 2 / 128 | **No** — audio track hardcodes 48 kHz stereo s16; Opus via aiortc |
 | `app.auto_start` | `true` | Yes |
@@ -143,7 +143,7 @@ Peer connections use `iceServers=[]` (LAN host candidates only).
 
 ## 9. Observed gaps (factual, from code)
 
-1. Several settings are stored and exposed in the UI but never enforced (`bitrate_kbps`, `codec`, audio params, `color_format`) — `RTCRtpSender` is imported but never used for `setParameters`.
+1. Several settings are stored and exposed in the UI but never enforced (`codec`, audio params, `color_format`) — the H.264/VP8 codec is whatever aiortc negotiates; audio runs at fixed 48 kHz stereo regardless of config.
 2. `dist/settings.json` contains a stale `network` section (`playout_delay`, `opus_fec`, `half_fps`) read by nothing.
 3. `receiver.html`/`sw.js`/`config.js` at repo root are vestigial (not served/registered).
 4. WS ICE-candidate handling is a no-op (works on LAN since answers carry host candidates, but would break STUN/TURN scenarios).
@@ -152,4 +152,4 @@ Peer connections use `iceServers=[]` (LAN host candidates only).
 
 ---
 
-*Derived directly from source at v1.0.11, 2026-08-28.*
+*Derived directly from source at v1.0.12, 2026-08-28.*

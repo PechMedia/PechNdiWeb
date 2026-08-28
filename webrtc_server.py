@@ -25,6 +25,8 @@ from aiortc import (
     RTCIceServer,
 )
 from aiortc.mediastreams import MediaStreamError
+import aiortc.codecs.h264
+import aiortc.codecs.vpx
 
 from ndi_core import NDIReceiver, NDIFinder, FOURCC_UYVY, FOURCC_BGRA, FOURCC_BGRX, FOURCC_RGBA, FOURCC_RGBX
 from config_manager import ConfigManager
@@ -111,6 +113,22 @@ def get_local_ip():
     return ip
 
 
+def apply_encoder_bitrate_settings(config: ConfigManager):
+    """Applies video.bitrate_kbps as the encoders' start and ceiling bitrate.
+
+    aiortc exposes no sender bitrate API; its H.264/VP8 encoders read these
+    module globals at construction and REMB only adjusts within [MIN, MAX].
+    Affects peer connections created after the call.
+    """
+    kbps = int(config.get("video", "bitrate_kbps", 0) or 0)
+    if kbps <= 0:
+        return
+    bps = kbps * 1000
+    for mod in (aiortc.codecs.h264, aiortc.codecs.vpx):
+        mod.DEFAULT_BITRATE = bps
+        mod.MAX_BITRATE = max(bps, mod.MIN_BITRATE)
+
+
 class NDIVideoTrack(VideoStreamTrack):
     """
     Ultra-low latency Video Track that bridges NDI frames into WebRTC.
@@ -188,13 +206,13 @@ class NDIVideoTrack(VideoStreamTrack):
                 # Handle BGRX / BGRA / UYVY formats
                 if fourcc == FOURCC_UYVY:
                     row_bytes = width * 2
+                    video_frame = av.VideoFrame(width, height, format="uyvy422")
                     if stride == row_bytes:
-                        byte_data = raw_data[:height * row_bytes].tobytes()
+                        # Zero-copy: feed the capture buffer straight into the plane
+                        video_frame.planes[0].update(raw_data)
                     else:
                         img_arr = raw_data.reshape((height, stride // 2, 2))[:, :width, :]
-                        byte_data = img_arr.tobytes()
-                    video_frame = av.VideoFrame(width, height, format="uyvy422")
-                    video_frame.planes[0].update(byte_data)
+                        video_frame.planes[0].update(img_arr.tobytes())
                 elif fourcc in (FOURCC_BGRX, FOURCC_BGRA):
                     # Direct 4-channel BGR0 / BGRA with zero-copy bgr0 packing
                     row_bytes = width * 4
@@ -339,6 +357,7 @@ class WebRTCStreamServer:
     def __init__(self, config: ConfigManager, web_dir: str):
         self.config = config
         self.web_dir = web_dir
+        apply_encoder_bitrate_settings(config)
         self.receiver = NDIReceiver(
             source_name=self.config.get("ndi", "source_name", ""),
             low_bandwidth=self.config.get("ndi", "low_bandwidth", False),
@@ -434,6 +453,7 @@ class WebRTCStreamServer:
         try:
             data = await request.json()
             self.config.update(data)
+            apply_encoder_bitrate_settings(self.config)
             # If source name changed, re-connect receiver
             new_source = self.config.get("ndi", "source_name", "")
             if new_source != self.receiver.source_name:
