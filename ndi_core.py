@@ -272,6 +272,7 @@ class NDIReceiver:
         self._lock = threading.Lock()
         self._audio_lock = threading.Lock()
         self.audio_pcm_buffer = bytearray()
+        self.audio_buffer_start = 0  # absolute byte offset of audio_pcm_buffer[0] in the stream
         self.stats = {
             "fps": 0.0,
             "width": 0,
@@ -403,8 +404,10 @@ class NDIReceiver:
                         self.audio_pcm_buffer.extend(pcm_bytes)
                         # Cap buffer to max 0.20s (48000 * 2ch * 2bytes * 0.20 = 38400 bytes) to maintain sub-50ms latency
                         max_buf_bytes = 38400
-                        if len(self.audio_pcm_buffer) > max_buf_bytes:
-                            del self.audio_pcm_buffer[:-max_buf_bytes]
+                        overflow = len(self.audio_pcm_buffer) - max_buf_bytes
+                        if overflow > 0:
+                            del self.audio_pcm_buffer[:overflow]
+                            self.audio_buffer_start += overflow
 
                     with self._lock:
                         self.stats["audio_samples_received"] += samples

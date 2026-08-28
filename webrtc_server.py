@@ -129,6 +129,7 @@ class NDIVideoTrack(VideoStreamTrack):
         self._time_base = fractions.Fraction(1, self._clock_rate)
         self._standby_frame = None
         self._last_processed_receive_time = 0.0
+        self._last_emit_time = 0.0
 
     def _create_standby_frame(self, width=1280, height=720, text="NO NDI SOURCE"):
         """Generates a placeholder dark test card when no source is connected."""
@@ -143,6 +144,13 @@ class NDIVideoTrack(VideoStreamTrack):
     async def recv(self):
         if self._start_time is None:
             self._start_time = time.perf_counter()
+
+        # Pace output to the configured target framerate (0 = native source pacing)
+        target_fps = int(self.config.get("video", "target_fps", 0) or 0)
+        if target_fps > 0 and self._last_emit_time > 0:
+            wait = (self._last_emit_time + 1.0 / target_fps) - time.perf_counter()
+            if wait > 0:
+                await asyncio.sleep(wait)
 
         # Wait up to 100ms for a new fresh frame
         frame_info = None
@@ -214,6 +222,7 @@ class NDIVideoTrack(VideoStreamTrack):
 
                 video_frame.pts = pts
                 video_frame.time_base = self._time_base
+                self._last_emit_time = time.perf_counter()
                 return video_frame
 
             except Exception as e:
@@ -226,6 +235,7 @@ class NDIVideoTrack(VideoStreamTrack):
         standby = av.VideoFrame.from_ndarray(self._standby_frame.to_ndarray(format="bgr24"), format="bgr24")
         standby.pts = pts
         standby.time_base = self._time_base
+        self._last_emit_time = time.perf_counter()
         return standby
 
 
@@ -248,6 +258,7 @@ class NDIAudioTrack(AudioStreamTrack):
         self._last_pts = 0
         self._audio_pts = 0
         self._samples_per_frame = 960  # 20ms at 48kHz
+        self._read_pos = None  # absolute byte cursor in the shared PCM stream
 
     async def recv(self):
         if self._start_time is None:
@@ -269,21 +280,32 @@ class NDIAudioTrack(AudioStreamTrack):
         bytes_needed = samples * 4
         
         # Wait for audio data (up to 100ms) to ensure we don't spin CPU on empty buffers
+        # Non-destructive broadcast read: every viewer reads its own window of the ring
         chunk = None
         for _ in range(10):
-            if hasattr(self.receiver, "_audio_lock") and hasattr(self.receiver, "audio_pcm_buffer"):
-                with self.receiver._audio_lock:
-                    if len(self.receiver.audio_pcm_buffer) >= bytes_needed:
-                        chunk = bytes(self.receiver.audio_pcm_buffer[:bytes_needed])
-                        del self.receiver.audio_pcm_buffer[:bytes_needed]
-                        break
+            with self.receiver._audio_lock:
+                start = self.receiver.audio_buffer_start
+                end = start + len(self.receiver.audio_pcm_buffer)
+                if self._read_pos is None:
+                    # Join at the live edge for lowest latency
+                    self._read_pos = end
+                if self._read_pos < start:
+                    # Fell behind the trimmed ring; snap forward to stay live
+                    self._read_pos = start
+                if end - self._read_pos >= bytes_needed:
+                    rel = self._read_pos - start
+                    chunk = bytes(self.receiver.audio_pcm_buffer[rel:rel + bytes_needed])
+                    self._read_pos += bytes_needed
+                    break
             await asyncio.sleep(0.01)
 
         if chunk and len(chunk) == bytes_needed:
             frame.planes[0].update(chunk)
             return frame
 
-        # Silence fallback if buffer empty
+        # Silence fallback if buffer empty; advance cursor so we resume at the live edge
+        if self._read_pos is not None:
+            self._read_pos += bytes_needed
         silence = b"\x00" * bytes_needed
         frame.planes[0].update(silence)
         return frame
