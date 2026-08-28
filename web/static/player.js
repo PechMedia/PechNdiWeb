@@ -51,6 +51,10 @@ class NDIWebRTCPlayer {
 
     pc.ontrack = (evt) => {
       if (this.pc !== pc) return;
+      // Chrome/Edge: collapse the receive jitter buffer toward zero for low latency
+      if ('playoutDelayHint' in evt.receiver) {
+        try { evt.receiver.playoutDelayHint = 0; } catch (e) {}
+      }
       if (this.video.srcObject !== evt.streams[0]) {
         this.video.srcObject = evt.streams[0];
         // Attempt to play with audio first
@@ -141,6 +145,10 @@ class NDIWebRTCPlayer {
 
     pc.ontrack = (evt) => {
       if (this.pc !== pc) return;
+      // Chrome/Edge: collapse the receive jitter buffer toward zero for low latency
+      if ('playoutDelayHint' in evt.receiver) {
+        try { evt.receiver.playoutDelayHint = 0; } catch (e) {}
+      }
       if (this.video.srcObject !== evt.streams[0]) {
         this.video.srcObject = evt.streams[0];
         this.video.muted = false;

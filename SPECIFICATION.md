@@ -1,6 +1,6 @@
 # PECH NDI-to-WebRTC Bridge — Application Specification
 
-**Version:** 1.0.12 · **Platform:** Windows 10/11 x64 · **Language:** Python 3.12 · **Packaging:** single-file PyInstaller exe (`PECH_NDI_WebRTC.exe`)
+**Version:** 1.0.13 · **Platform:** Windows 10/11 x64 · **Language:** Python 3.12 · **Packaging:** single-file PyInstaller exe (`PECH_NDI_WebRTC.exe`)
 
 ## 1. Purpose
 
@@ -78,10 +78,10 @@ pywebview window: 1280×820 (min 900×600), loads `http://localhost:<port>/admin
 ### 3.6 Web frontend (`web/`)
 - **`index.html`** — pure full-screen player ("display" surface): edge-to-edge `<video>`, auto-hiding cursor (2.5 s idle), custom right-click context menu (settings, fullscreen, mute, stats overlay, share/QR, link to admin), inline settings modal, share modal with QR (rendered by external `api.qrserver.com`), toast notifications, unmute banner.
 - **`admin.html`** — dashboard: settings form (source select with live discovery, resolution, fps, bitrate, sample rate, HTTP port, low-bandwidth checkbox), Save/Start/Stop buttons, LAN URL box, embedded live monitor with FPS/res/bitrate/viewer overlays, share modal.
-- **`static/player.js`** — `NDIWebRTCPlayer` class: signaling tries **WebSocket `/ws` first, falls back to WHEP**; recvonly transceivers; autoplay-policy handling (try unmuted → fall back to muted + banner, the v1.0.10 fix); `getStats()` polling every 1 s (fps/res/bitrate/jitter); auto-reconnect every 2.5 s on disconnect/failure.
+- **`static/player.js`** — `NDIWebRTCPlayer` class: signaling tries **WebSocket `/ws` first, falls back to WHEP**; recvonly transceivers; on Chrome/Edge sets `receiver.playoutDelayHint = 0` to collapse the receive jitter buffer toward zero (v1.0.13); autoplay-policy handling (try unmuted → fall back to muted + banner, the v1.0.10 fix); `getStats()` polling every 1 s (fps/res/bitrate/jitter); auto-reconnect every 2.5 s on disconnect/failure.
 - **`static/admin.js`** — settings load/save, source discovery, stream start/stop, `/api/status` polling every 2 s, QR share, fullscreen.
 - **`static/style.css`** — dark dashboard theme (560 lines).
-- **Root-level legacy files**: `receiver.html` (minimal player page, **not served by any route** — only `web/` is bundled/routed), `sw.js` (pass-through service worker, not registered by any page) and `config.js` (`APP_VERSION = '1.0.12'`, not imported) — kept only because the versioning rule in `CLAUDE.md` references them. Cache-busting is done via `?v=1.0.12` query strings in the HTML.
+- **Root-level legacy files**: `receiver.html` (minimal player page, **not served by any route** — only `web/` is bundled/routed), `sw.js` (pass-through service worker, not registered by any page) and `config.js` (`APP_VERSION = '1.0.13'`, not imported) — kept only because the versioning rule in `CLAUDE.md` references them. Cache-busting is done via `?v=1.0.13` query strings in the HTML.
 
 ## 4. HTTP / Signaling API
 
@@ -152,4 +152,4 @@ Peer connections use `iceServers=[]` (LAN host candidates only).
 
 ---
 
-*Derived directly from source at v1.0.12, 2026-08-28.*
+*Derived directly from source at v1.0.13, 2026-08-28.*
