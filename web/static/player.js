@@ -51,8 +51,10 @@ class NDIWebRTCPlayer {
 
     pc.ontrack = (evt) => {
       if (this.pc !== pc) return;
-      // Chrome/Edge: collapse the receive jitter buffer toward zero for low latency
-      if ('playoutDelayHint' in evt.receiver) {
+      // Chrome/Edge: collapse the VIDEO receive jitter buffer toward zero for low
+      // latency. Video-only: hinting 0 on audio receivers can starve neteq and
+      // break audio playback.
+      if (evt.track && evt.track.kind === 'video' && 'playoutDelayHint' in evt.receiver) {
         try { evt.receiver.playoutDelayHint = 0; } catch (e) {}
       }
       if (this.video.srcObject !== evt.streams[0]) {
@@ -145,8 +147,10 @@ class NDIWebRTCPlayer {
 
     pc.ontrack = (evt) => {
       if (this.pc !== pc) return;
-      // Chrome/Edge: collapse the receive jitter buffer toward zero for low latency
-      if ('playoutDelayHint' in evt.receiver) {
+      // Chrome/Edge: collapse the VIDEO receive jitter buffer toward zero for low
+      // latency. Video-only: hinting 0 on audio receivers can starve neteq and
+      // break audio playback.
+      if (evt.track && evt.track.kind === 'video' && 'playoutDelayHint' in evt.receiver) {
         try { evt.receiver.playoutDelayHint = 0; } catch (e) {}
       }
       if (this.video.srcObject !== evt.streams[0]) {

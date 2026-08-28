@@ -172,6 +172,9 @@ class H264HighProfileEncoder(H264Encoder):
             self.codec.options = {
                 "level": "51" if frame.width * frame.height > 1920 * 1080 else "42",
                 "tune": "zerolatency",
+                # x264's default "medium" preset makes 1080p High slower than the
+                # 60fps frame budget, stalling the event loop (latency/audio issues)
+                "preset": "veryfast",
             }
             self.codec.profile = "High"
 
