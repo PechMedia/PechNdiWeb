@@ -1,6 +1,6 @@
 # PECH NDI-to-WebRTC Bridge — Application Specification
 
-**Version:** 1.0.13 · **Platform:** Windows 10/11 x64 · **Language:** Python 3.12 · **Packaging:** single-file PyInstaller exe (`PECH_NDI_WebRTC.exe`)
+**Version:** 1.0.14 · **Platform:** Windows 10/11 x64 · **Language:** Python 3.12 · **Packaging:** single-file PyInstaller exe (`PECH_NDI_WebRTC.exe`)
 
 ## 1. Purpose
 
@@ -70,6 +70,7 @@ Pure-ctypes wrapper, no third-party NDI package.
 - **`NDIAudioTrack`**: fixed 48 kHz / stereo / s16 / 960-sample frames; silence inserted if buffer starves after 100 ms wait.
 - **`WebRTCStreamServer`**: aiohttp app with CORS + Private-Network-Access middleware (`Access-Control-Allow-*: *`, `Allow-Private-Network: true`). Creates one `RTCPeerConnection` per viewer with fresh video+audio tracks; connections self-remove on `failed/closed/disconnected`. On `start()`, auto-connects and starts the receiver if `app.auto_start` and a source name is set.
 - **TLS**: auto-generates a self-signed RSA-2048 cert (10-year, SAN = localhost + 127.0.0.1 + LAN IP) and serves **HTTPS on `http_port + 1`** (default 8026) in addition to HTTP.
+- **Encoder tuning** (v1.0.12+): `video.bitrate_kbps` seeds the aiortc H.264/VP8 encoder start and ceiling bitrate (module globals, applied at server start and on settings save). **v1.0.14**: additionally advertises H.264 Constrained-High/High at level 4.2, prefers them in negotiation, and encodes High profile (CABAC + 8×8 transforms) for sharper text/detail — with automatic Baseline fallback for browsers that offer only Baseline.
 - `get_local_ip()`: UDP-connect trick to find the egress IPv4.
 
 ### 3.5 `ui_app.py` — Desktop shell (29 lines)
@@ -81,7 +82,7 @@ pywebview window: 1280×820 (min 900×600), loads `http://localhost:<port>/admin
 - **`static/player.js`** — `NDIWebRTCPlayer` class: signaling tries **WebSocket `/ws` first, falls back to WHEP**; recvonly transceivers; on Chrome/Edge sets `receiver.playoutDelayHint = 0` to collapse the receive jitter buffer toward zero (v1.0.13); autoplay-policy handling (try unmuted → fall back to muted + banner, the v1.0.10 fix); `getStats()` polling every 1 s (fps/res/bitrate/jitter); auto-reconnect every 2.5 s on disconnect/failure.
 - **`static/admin.js`** — settings load/save, source discovery, stream start/stop, `/api/status` polling every 2 s, QR share, fullscreen.
 - **`static/style.css`** — dark dashboard theme (560 lines).
-- **Root-level legacy files**: `receiver.html` (minimal player page, **not served by any route** — only `web/` is bundled/routed), `sw.js` (pass-through service worker, not registered by any page) and `config.js` (`APP_VERSION = '1.0.13'`, not imported) — kept only because the versioning rule in `CLAUDE.md` references them. Cache-busting is done via `?v=1.0.13` query strings in the HTML.
+- **Root-level legacy files**: `receiver.html` (minimal player page, **not served by any route** — only `web/` is bundled/routed), `sw.js` (pass-through service worker, not registered by any page) and `config.js` (`APP_VERSION = '1.0.14'`, not imported) — kept only because the versioning rule in `CLAUDE.md` references them. Cache-busting is done via `?v=1.0.14` query strings in the HTML.
 
 ## 4. HTTP / Signaling API
 
@@ -122,7 +123,7 @@ Peer connections use `iceServers=[]` (LAN host candidates only).
 | `video.target_width/height` | `0` (= native) | Yes (live `reformat`) |
 | `video.target_fps` | `0` | Yes — track paces output to this rate (0 = native source pacing) |
 | `video.bitrate_kbps` | `6000` | Yes — sets the aiortc H.264/VP8 encoder start and ceiling bitrate (module globals; REMB still adapts within range) |
-| `video.codec` | `"H264"` | **No** — codec comes from SDP negotiation/aiortc availability |
+| `video.codec` | `"H264"` | **No** (key ignored) — but the server now advertises H.264 High@4.2 and prefers it when the viewer offers it (v1.0.14); falls back to Baseline for browsers that don't |
 | `audio.sample_rate/channels/bitrates` | 48000 / 2 / 128 | **No** — audio track hardcodes 48 kHz stereo s16; Opus via aiortc |
 | `app.auto_start` | `true` | Yes |
 | `app.title` | window title | Yes (UI mode) |
@@ -143,7 +144,7 @@ Peer connections use `iceServers=[]` (LAN host candidates only).
 
 ## 9. Observed gaps (factual, from code)
 
-1. Several settings are stored and exposed in the UI but never enforced (`codec`, audio params, `color_format`) — the H.264/VP8 codec is whatever aiortc negotiates; audio runs at fixed 48 kHz stereo regardless of config.
+1. Several settings are stored and exposed in the UI but never enforced (audio params, `color_format`; the `codec` key is still ignored even though the server now prefers H.264 High profile when offered); audio runs at fixed 48 kHz stereo regardless of config.
 2. `dist/settings.json` contains a stale `network` section (`playout_delay`, `opus_fec`, `half_fps`) read by nothing.
 3. `receiver.html`/`sw.js`/`config.js` at repo root are vestigial (not served/registered).
 4. WS ICE-candidate handling is a no-op (works on LAN since answers carry host candidates, but would break STUN/TURN scenarios).
@@ -152,4 +153,4 @@ Peer connections use `iceServers=[]` (LAN host candidates only).
 
 ---
 
-*Derived directly from source at v1.0.13, 2026-08-28.*
+*Derived directly from source at v1.0.14, 2026-08-28.*

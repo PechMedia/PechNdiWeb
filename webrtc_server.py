@@ -27,6 +27,14 @@ from aiortc import (
 from aiortc.mediastreams import MediaStreamError
 import aiortc.codecs.h264
 import aiortc.codecs.vpx
+import aiortc.rtcpeerconnection
+import aiortc.rtcrtpsender
+from aiortc.codecs import CODECS
+from aiortc.codecs.h264 import H264Encoder
+from aiortc.rtcrtpsender import get_encoder as _aiortc_get_encoder
+from aiortc.rtcrtpparameters import RTCRtpCodecParameters, RTCRtcpFeedback
+from aiortc.sdp import H264Profile, parse_h264_profile_level_id
+from av.video.frame import PictureType
 
 from ndi_core import NDIReceiver, NDIFinder, FOURCC_UYVY, FOURCC_BGRA, FOURCC_BGRX, FOURCC_RGBA, FOURCC_RGBX
 from config_manager import ConfigManager
@@ -127,6 +135,124 @@ def apply_encoder_bitrate_settings(config: ConfigManager):
     for mod in (aiortc.codecs.h264, aiortc.codecs.vpx):
         mod.DEFAULT_BITRATE = bps
         mod.MAX_BITRATE = max(bps, mod.MIN_BITRATE)
+
+
+class H264HighProfileEncoder(H264Encoder):
+    """Encodes H.264 High profile (CABAC + 8x8 transforms) for sharper text/detail.
+
+    Mirrors aiortc 1.15 H264Encoder._encode_frame, replacing the hardcoded
+    Baseline profile / level 3.1 with High profile and a resolution-appropriate level.
+    """
+
+    def _encode_frame(self, frame, force_keyframe):
+        if self.codec and (
+            frame.width != self.codec.width
+            or frame.height != self.codec.height
+            # we only adjust bitrate if it changes by over 10%
+            or abs(self.target_bitrate - self.codec.bit_rate) / self.codec.bit_rate
+            > 0.1
+        ):
+            self.buffer_data = b""
+            self.buffer_pts = None
+            self.codec = None
+
+        if force_keyframe:
+            frame.pict_type = PictureType.I
+        else:
+            frame.pict_type = PictureType.NONE
+
+        if self.codec is None:
+            self.codec = av.CodecContext.create("libx264", "w")
+            self.codec.width = frame.width
+            self.codec.height = frame.height
+            self.codec.bit_rate = self.target_bitrate
+            self.codec.pix_fmt = "yuv420p"
+            self.codec.framerate = fractions.Fraction(aiortc.codecs.h264.MAX_FRAME_RATE, 1)
+            self.codec.time_base = fractions.Fraction(1, aiortc.codecs.h264.MAX_FRAME_RATE)
+            self.codec.options = {
+                "level": "51" if frame.width * frame.height > 1920 * 1080 else "42",
+                "tune": "zerolatency",
+            }
+            self.codec.profile = "High"
+
+        data_to_send = b""
+        for package in self.codec.encode(frame):
+            data_to_send += bytes(package)
+
+        if data_to_send:
+            yield from self._split_bitstream(data_to_send)
+
+
+_H264_HIGH_PROFILES = (H264Profile.PROFILE_HIGH, H264Profile.PROFILE_CONSTRAINED_HIGH)
+_H264_HIGH_APPLIED = False
+
+
+def apply_h264_high_profile_support():
+    """Advertises and encodes H.264 High profile when the viewer's browser offers it.
+
+    aiortc 1.15 only advertises Baseline (42001f/42e01f) and encodes Baseline
+    level 3.1, which softens text and fine detail. This patch adds High /
+    Constrained-High level 4.2 entries, prefers them in negotiation, and routes
+    them to H264HighProfileEncoder. Browsers offering only Baseline keep the
+    original behavior. Idempotent.
+    """
+    global _H264_HIGH_APPLIED
+    if _H264_HIGH_APPLIED:
+        return
+    _H264_HIGH_APPLIED = True
+
+    # 1) Advertise Constrained-High and High level 4.2 (level-asymmetry allowed)
+    for pt, plid in ((103, "640c2a"), (104, "64002a")):
+        CODECS["video"].append(
+            RTCRtpCodecParameters(
+                mimeType="video/H264",
+                clockRate=90000,
+                payloadType=pt,
+                rtcpFeedback=[
+                    RTCRtcpFeedback(type="nack"),
+                    RTCRtcpFeedback(type="nack", parameter="pli"),
+                    RTCRtcpFeedback(type="goog-remb"),
+                ],
+                parameters={
+                    "level-asymmetry-allowed": "1",
+                    "packetization-mode": "1",
+                    "profile-level-id": plid,
+                },
+            )
+        )
+
+    def _h264_profile(codec):
+        try:
+            return parse_h264_profile_level_id(
+                str(codec.parameters.get("profile-level-id", "42E01F"))
+            )[0]
+        except ValueError:
+            return None
+
+    # 2) Prefer High-family entries so they become the selected codec
+    _orig_find_common = aiortc.rtcpeerconnection.find_common_codecs
+
+    def _find_common_codecs_prefer_high(local_codecs, remote_codecs):
+        common = _orig_find_common(local_codecs, remote_codecs)
+        high = []
+        rest = []
+        for c in common:
+            if c.mimeType.lower() == "video/h264" and _h264_profile(c) in _H264_HIGH_PROFILES:
+                high.append(c)
+            else:
+                rest.append(c)
+        high.sort(key=lambda c: 0 if _h264_profile(c) == H264Profile.PROFILE_HIGH else 1)
+        return high + rest
+
+    aiortc.rtcpeerconnection.find_common_codecs = _find_common_codecs_prefer_high
+
+    # 3) Encode High only when a High-family profile was actually negotiated
+    def _get_encoder(codec):
+        if codec.mimeType.lower() == "video/h264" and _h264_profile(codec) in _H264_HIGH_PROFILES:
+            return H264HighProfileEncoder()
+        return _aiortc_get_encoder(codec)
+
+    aiortc.rtcrtpsender.get_encoder = _get_encoder
 
 
 class NDIVideoTrack(VideoStreamTrack):
@@ -358,6 +484,7 @@ class WebRTCStreamServer:
         self.config = config
         self.web_dir = web_dir
         apply_encoder_bitrate_settings(config)
+        apply_h264_high_profile_support()
         self.receiver = NDIReceiver(
             source_name=self.config.get("ndi", "source_name", ""),
             low_bandwidth=self.config.get("ndi", "low_bandwidth", False),
