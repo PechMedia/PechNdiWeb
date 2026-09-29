@@ -7,6 +7,7 @@ Build script for packaging PECH NDI-to-WebRTC Bridge:
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -124,11 +125,19 @@ def build():
         print(f"  --> Note: Setup Installer build error: {e}")
 
     # 5. Generate Inno Setup script (.iss)
+    app_version = "1.0.20"
+    config_js = os.path.join(base_dir, "config.js")
+    if os.path.exists(config_js):
+        with open(config_js, "r", encoding="utf-8") as f:
+            m = re.search(r"APP_VERSION\s*=\s*['\"]([^'\"]+)['\"]", f.read())
+            if m:
+                app_version = m.group(1)
+
     iss_file = os.path.join(base_dir, "PECH_NDI_WebRTC_InnoSetup.iss")
     iss_content = f"""; Inno Setup Script for PECH NDI-to-WebRTC Bridge
 [Setup]
 AppName=PECH NDI-to-WebRTC Bridge
-AppVersion=1.0.16
+AppVersion={app_version}
 AppPublisher=PechMedia
 DefaultDirName={{autopf}}\\PECH NDI Bridge
 DefaultGroupName=PECH NDI Bridge
