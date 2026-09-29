@@ -28,12 +28,6 @@ DEFAULT_SETTINGS = {
         "bitrate_kbps": 2500, # 2.5 Mbps optimized for LAN Wi-Fi
         "codec": "H264",
     },
-    "audio": {
-        "channels": 2,
-        "sample_rate": 48000,
-        "bitrate_kbps": 128,
-        "codec": "opus",
-    },
     "app": {
         "auto_start": True,
         "title": "PECH NDI-to-WebRTC Bridge",

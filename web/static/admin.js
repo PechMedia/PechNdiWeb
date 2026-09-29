@@ -73,14 +73,9 @@ function populateForm(settings) {
     if (bitInput) bitInput.value = settings.video.bitrate_kbps || 6000;
   }
 
-  if (settings.audio) {
-    const srSelect = document.getElementById('audioSampleRate');
-    if (srSelect) srSelect.value = String(settings.audio.sample_rate || 48000);
-  }
-
   if (settings.server) {
     const portInput = document.getElementById('httpPortInput');
-    if (portInput) portInput.value = settings.server.http_port || 8025;
+    if (portInput) portInput.value = settings.port || settings.server.http_port || 8123;
   }
 }
 
@@ -139,11 +134,11 @@ async function saveSettings(e) {
   const resVal = document.getElementById('resolutionSelect')?.value || '0x0';
   const [w, h] = resVal.split('x').map(Number);
   const targetFps = Number(document.getElementById('fpsSelect')?.value || 0);
-  const bitrate = Number(document.getElementById('bitrateInput')?.value || 6000);
-  const sampleRate = Number(document.getElementById('audioSampleRate')?.value || 48000);
-  const port = Number(document.getElementById('httpPortInput')?.value || 8025);
+  const bitrate = Number(document.getElementById('bitrateInput')?.value || 2500);
+  const port = Number(document.getElementById('httpPortInput')?.value || 8123);
 
   const payload = {
+    port: port,
     ndi: {
       source_name: sourceName,
       low_bandwidth: lowBandwidth,
@@ -153,9 +148,6 @@ async function saveSettings(e) {
       target_height: h,
       target_fps: targetFps,
       bitrate_kbps: bitrate,
-    },
-    audio: {
-      sample_rate: sampleRate,
     },
     server: {
       http_port: port,
@@ -236,18 +228,6 @@ function setupEventListeners() {
   document.getElementById('btnStartStream')?.addEventListener('click', startStream);
   document.getElementById('btnStopStream')?.addEventListener('click', stopStream);
 
-  // Unmute Banner
-  const banner = document.getElementById('unmuteBanner');
-  if (banner) {
-    banner.addEventListener('click', () => {
-      const video = document.getElementById('remoteVideo');
-      if (video) {
-        video.muted = false;
-        video.play();
-      }
-      banner.style.display = 'none';
-    });
-  }
 
   // Fullscreen
   document.getElementById('btnFullscreen')?.addEventListener('click', () => {

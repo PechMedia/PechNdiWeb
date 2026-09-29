@@ -266,19 +266,13 @@ class NDIReceiver:
         self._running = False
         self._thread = None
         self.latest_video_frame = None
-        self.latest_audio_frame = None
         self.on_video_frame = None
-        self.on_audio_frame = None
         self._lock = threading.Lock()
-        self._audio_lock = threading.Lock()
-        self.audio_pcm_buffer = bytearray()
-        self.audio_buffer_start = 0  # absolute byte offset of audio_pcm_buffer[0] in the stream
         self.stats = {
             "fps": 0.0,
             "width": 0,
             "height": 0,
             "frames_received": 0,
-            "audio_samples_received": 0,
             "connected": False,
             "last_frame_time": 0.0,
         }
@@ -369,50 +363,7 @@ class NDIReceiver:
                 self.sdk.dll.NDIlib_recv_free_video_v2(self._p_recv, byref(v_frame))
 
             elif frame_type == NDILIB_FRAME_TYPE_AUDIO:
-                # Audio received
-                sample_rate = a_frame.sample_rate
-                channels = a_frame.no_channels
-                samples = a_frame.no_samples
-                stride = a_frame.channel_stride_in_bytes
-
-                if a_frame.p_data and samples > 0 and channels > 0:
-                    # Planar float32 audio
-                    total_floats = (stride // 4) * channels if stride else samples * channels
-                    buf = (c_float * total_floats).from_address(ctypes.addressof(a_frame.p_data.contents))
-                    raw_audio = np.frombuffer(buf, dtype=np.float32)
-
-                    # Reshape planar audio if needed (channels x samples)
-                    if stride and stride != samples * 4:
-                        stride_samples = stride // 4
-                        planar = np.zeros((channels, samples), dtype=np.float32)
-                        for ch in range(channels):
-                            planar[ch] = raw_audio[ch * stride_samples : ch * stride_samples + samples]
-                    else:
-                        planar = raw_audio[: channels * samples].reshape((channels, samples))
-
-                    # Convert planar float32 [-1.0, 1.0] directly to int16 stereo interleaved
-                    left = planar[0]
-                    right = planar[1] if channels > 1 else left
-                    left_i16 = (np.clip(left, -1.0, 1.0) * 32767.0).astype(np.int16)
-                    right_i16 = (np.clip(right, -1.0, 1.0) * 32767.0).astype(np.int16)
-                    interleaved = np.empty(samples * 2, dtype=np.int16)
-                    interleaved[0::2] = left_i16
-                    interleaved[1::2] = right_i16
-                    pcm_bytes = interleaved.tobytes()
-
-                    with self._audio_lock:
-                        self.audio_pcm_buffer.extend(pcm_bytes)
-                        # Cap buffer to max 0.20s (48000 * 2ch * 2bytes * 0.20 = 38400 bytes) to maintain sub-50ms latency
-                        max_buf_bytes = 38400
-                        overflow = len(self.audio_pcm_buffer) - max_buf_bytes
-                        if overflow > 0:
-                            del self.audio_pcm_buffer[:overflow]
-                            self.audio_buffer_start += overflow
-
-                    with self._lock:
-                        self.stats["audio_samples_received"] += samples
-                        self.stats["connected"] = True
-
+                # Stream is strictly video-only (muted); immediately free audio frame
                 self.sdk.dll.NDIlib_recv_free_audio_v2(self._p_recv, byref(a_frame))
 
             # FPS computation every 1 second

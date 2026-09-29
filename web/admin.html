@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PECH NDI Bridge - Configuration & Stream Controller</title>
-  <link rel="stylesheet" href="/static/style.css?v=1.0.18">
+  <link rel="stylesheet" href="/static/style.css?v=1.0.19">
 </head>
 <body>
   <header>
@@ -74,19 +74,10 @@
             </div>
           </div>
 
-          <!-- Audio Parameters -->
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">Audio Sample Rate</label>
-              <select id="audioSampleRate" class="form-select">
-                <option value="48000">48 kHz (Broadcast/Opus)</option>
-                <option value="44100">44.1 kHz</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label class="form-label">Web / HTTP Port</label>
-              <input type="number" id="httpPortInput" class="form-control" value="8025" />
-            </div>
+          <!-- Server Port -->
+          <div class="form-group">
+            <label class="form-label">Server / HTTP Port</label>
+            <input type="number" id="httpPortInput" class="form-control" value="8123" />
           </div>
 
           <div class="form-group" style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem;">
@@ -126,9 +117,6 @@
         <div class="video-stage-container" id="videoStage" style="min-height: 480px;">
           <video id="remoteVideo" autoplay playsinline muted></video>
 
-          <div id="unmuteBanner" class="unmute-banner" style="display: none;">
-            <div>Click here to unmute preview audio</div>
-          </div>
 
           <div class="video-overlay-top">
             <div class="overlay-stats">
@@ -169,7 +157,7 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="/static/player.js?v=1.0.18"></script>
-  <script src="/static/admin.js?v=1.0.18"></script>
+  <script src="/static/player.js?v=1.0.19"></script>
+  <script src="/static/admin.js?v=1.0.19"></script>
 </body>
 </html>

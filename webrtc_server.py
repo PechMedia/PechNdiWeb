@@ -424,7 +424,7 @@ class WebRTCStreamServer:
         self.app = FastAPI(
             title="PECH NDI-to-WebRTC Streaming Bridge",
             description="Ultra-low latency NDI to WebRTC/WHEP tablet streamer with REST state control",
-            version="1.0.18",
+            version="1.0.19",
         )
 
         self.app.add_middleware(

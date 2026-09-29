@@ -1,6 +1,6 @@
 # PECH NDI-to-WebRTC Streaming Bridge
 ## Installation, Configuration & Operator's Guide
-**Version:** 1.0.18  
+**Version:** 1.0.19  
 **Target:** Low-Latency WebRTC Tablet Streaming for Churches & Visually Impaired Members
 
 ---
@@ -91,12 +91,6 @@ The bridge reads from [`settings.json`](file:///d:/PECHNDIWEB/settings.json) loc
     "target_fps": 30,
     "bitrate_kbps": 2500,
     "codec": "H264"
-  },
-  "audio": {
-    "channels": 2,
-    "sample_rate": 48000,
-    "bitrate_kbps": 128,
-    "codec": "opus"
   },
   "app": {
     "auto_start": true,
