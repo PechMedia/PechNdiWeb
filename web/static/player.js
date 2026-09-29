@@ -1,6 +1,9 @@
 /**
  * PECH NDI-to-WebRTC Near-Zero Latency Player Client
- * Automatically connects to local WebRTC signaling endpoint (WHEP / WebSocket)
+ * Optimized for Kiosk Android Tablets:
+ * - Strictly video-only (no audio transceiver / muted) for zero-click mobile autoplay
+ * - Real-time state listener via WebSocket (/ws) with automatic WHEP fallback
+ * - Resilient auto-reconnect logic
  */
 
 class NDIWebRTCPlayer {
@@ -10,8 +13,9 @@ class NDIWebRTCPlayer {
       signalingUrl: options.signalingUrl || (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/ws',
       whepUrl: options.whepUrl || '/api/whep',
       autoReconnect: options.autoReconnect !== false,
-      reconnectInterval: 2500,
+      reconnectInterval: 2000,
       onStatusChange: options.onStatusChange || (() => {}),
+      onStateUpdate: options.onStateUpdate || (() => {}),
       onStatsUpdate: options.onStatsUpdate || (() => {}),
     };
 
@@ -29,7 +33,7 @@ class NDIWebRTCPlayer {
       this.reconnectTimer = null;
     }
     this.isReconnecting = false;
-    this.options.onStatusChange('connecting', 'Negotiating WebRTC stream...');
+    this.options.onStatusChange('connecting', 'Waiting for Slides...');
     try {
       await this._connectWebSocket();
     } catch (e) {
@@ -46,55 +50,42 @@ class NDIWebRTCPlayer {
     });
     this.pc = pc;
 
+    // Strictly video-only to guarantee zero-interaction autoplay on Android tablets
     pc.addTransceiver('video', { direction: 'recvonly' });
-    pc.addTransceiver('audio', { direction: 'recvonly' });
 
     pc.ontrack = (evt) => {
       if (this.pc !== pc) return;
-      // Chrome/Edge: collapse the VIDEO receive jitter buffer toward zero for low
-      // latency. Video-only: hinting 0 on audio receivers can starve neteq and
-      // break audio playback.
       if (evt.track && evt.track.kind === 'video' && 'playoutDelayHint' in evt.receiver) {
         try { evt.receiver.playoutDelayHint = 0; } catch (e) {}
       }
       if (this.video.srcObject !== evt.streams[0]) {
         this.video.srcObject = evt.streams[0];
-        // Attempt to play with audio first
-        this.video.muted = false;
-        this.video.play().catch(e => {
-          console.log('Autoplay blocked, user gesture needed for audio:', e);
-          // Fallback to muted so video at least plays
-          this.video.muted = true;
-          this.video.play().catch(err => console.log('Muted autoplay blocked:', err));
-          
-          const banner = document.getElementById('unmuteBanner');
-          if (banner) banner.style.display = 'flex';
-        });
+        this.video.muted = true;
+        this.video.playsInline = true;
+        this.video.play().catch(e => console.log('Autoplay error:', e));
       }
     };
 
     pc.onconnectionstatechange = () => {
       if (this.pc !== pc) return;
       const state = pc.connectionState;
-      console.log('WebRTC Connection State:', state);
       if (state === 'connected') {
         this.isConnected = true;
-        this.options.onStatusChange('live', 'LIVE (Zero Latency)');
+        this.options.onStatusChange('live', 'LIVE');
         this._startStats();
       } else if (state === 'disconnected' || state === 'failed') {
         this.isConnected = false;
-        this.options.onStatusChange('offline', 'Disconnected');
+        this.options.onStatusChange('offline', 'Waiting for Slides...');
         this._scheduleReconnect();
       }
     };
 
     const offer = await pc.createOffer({
       offerToReceiveVideo: true,
-      offerToReceiveAudio: true,
+      offerToReceiveAudio: false,
     });
     await pc.setLocalDescription(offer);
 
-    // Connect WS
     const ws = new WebSocket(this.options.signalingUrl);
     this.ws = ws;
 
@@ -107,23 +98,25 @@ class NDIWebRTCPlayer {
     };
 
     ws.onmessage = async (evt) => {
-      if (this.ws !== ws || this.pc !== pc) return;
+      if (this.ws !== ws) return;
       try {
         const data = JSON.parse(evt.data);
-        if (data.type === 'answer') {
+        if (data.type === 'answer' && this.pc === pc) {
           await pc.setRemoteDescription(new RTCSessionDescription({
             type: 'answer',
             sdp: data.sdp,
           }));
+        } else if (data.type === 'status') {
+          // Stream state update (pause / resume / message)
+          this.options.onStateUpdate(data);
         }
       } catch (e) {
         console.error('Error handling signaling message:', e);
       }
     };
 
-    ws.onerror = (err) => {
+    ws.onerror = () => {
       if (this.ws !== ws) return;
-      console.error('Signaling WebSocket error:', err);
       this._scheduleReconnect();
     };
 
@@ -131,7 +124,7 @@ class NDIWebRTCPlayer {
       if (this.ws !== ws) return;
       if (this.isConnected) {
         this.isConnected = false;
-        this.options.onStatusChange('offline', 'Stream Closed');
+        this.options.onStatusChange('offline', 'Waiting for Slides...');
         this._scheduleReconnect();
       }
     };
@@ -142,27 +135,19 @@ class NDIWebRTCPlayer {
     const pc = new RTCPeerConnection({ iceServers: [] });
     this.pc = pc;
 
+    // Strictly video-only
     pc.addTransceiver('video', { direction: 'recvonly' });
-    pc.addTransceiver('audio', { direction: 'recvonly' });
 
     pc.ontrack = (evt) => {
       if (this.pc !== pc) return;
-      // Chrome/Edge: collapse the VIDEO receive jitter buffer toward zero for low
-      // latency. Video-only: hinting 0 on audio receivers can starve neteq and
-      // break audio playback.
       if (evt.track && evt.track.kind === 'video' && 'playoutDelayHint' in evt.receiver) {
         try { evt.receiver.playoutDelayHint = 0; } catch (e) {}
       }
       if (this.video.srcObject !== evt.streams[0]) {
         this.video.srcObject = evt.streams[0];
-        this.video.muted = false;
-        this.video.play().catch(e => {
-          console.log('Autoplay audio interaction needed:', e);
-          this.video.muted = true;
-          this.video.play().catch(err => {});
-          const banner = document.getElementById('unmuteBanner');
-          if (banner) banner.style.display = 'flex';
-        });
+        this.video.muted = true;
+        this.video.playsInline = true;
+        this.video.play().catch(e => console.log('WHEP Autoplay:', e));
       }
     };
 
@@ -171,16 +156,19 @@ class NDIWebRTCPlayer {
       const state = pc.connectionState;
       if (state === 'connected') {
         this.isConnected = true;
-        this.options.onStatusChange('live', 'LIVE (WHEP)');
+        this.options.onStatusChange('live', 'LIVE');
         this._startStats();
       } else if (state === 'disconnected' || state === 'failed') {
         this.isConnected = false;
-        this.options.onStatusChange('offline', 'Disconnected');
+        this.options.onStatusChange('offline', 'Waiting for Slides...');
         this._scheduleReconnect();
       }
     };
 
-    const offer = await pc.createOffer();
+    const offer = await pc.createOffer({
+      offerToReceiveVideo: true,
+      offerToReceiveAudio: false,
+    });
     await pc.setLocalDescription(offer);
 
     const res = await fetch(this.options.whepUrl, {
@@ -211,18 +199,16 @@ class NDIWebRTCPlayer {
         let width = this.video.videoWidth || 0;
         let height = this.video.videoHeight || 0;
         let bitrate = 0;
-        let jitter = 0;
 
         stats.forEach(report => {
           if (report.type === 'inbound-rtp' && report.kind === 'video') {
             if (report.framesPerSecond) fps = Math.round(report.framesPerSecond);
-            if (report.jitter) jitter = Math.round(report.jitter * 1000);
             if (report.bytesReceived) {
               const now = performance.now();
               const bytesDiff = report.bytesReceived - lastBytes;
               const timeDiff = (now - lastTime) / 1000;
               if (lastBytes > 0 && timeDiff > 0) {
-                bitrate = Math.round((bytesDiff * 8) / timeDiff / 1000); // kbps
+                bitrate = Math.round((bytesDiff * 8) / timeDiff / 1000);
               }
               lastBytes = report.bytesReceived;
               lastTime = now;
@@ -231,14 +217,13 @@ class NDIWebRTCPlayer {
         });
 
         this.options.onStatsUpdate({
-          fps: fps || (this.video.videoWidth ? 60 : 0),
+          fps: fps,
           width: width,
           height: height,
           bitrate: bitrate,
-          jitter: jitter,
         });
       } catch (e) {
-        // Ignore stats polling errors
+        // Ignore stats errors
       }
     }, 1000);
   }
@@ -275,18 +260,14 @@ class NDIWebRTCPlayer {
       oldWs.onmessage = null;
       oldWs.onerror = null;
       oldWs.onclose = null;
-      try {
-        oldWs.close();
-      } catch (e) {}
+      try { oldWs.close(); } catch (e) {}
     }
     if (this.pc) {
       const oldPc = this.pc;
       this.pc = null;
       oldPc.ontrack = null;
       oldPc.onconnectionstatechange = null;
-      try {
-        oldPc.close();
-      } catch (e) {}
+      try { oldPc.close(); } catch (e) {}
     }
   }
 

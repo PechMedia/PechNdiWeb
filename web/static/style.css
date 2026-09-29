@@ -558,3 +558,41 @@ body.pure-player.hide-cursor * {
 .floating-stats-overlay.active {
   display: flex;
 }
+
+/* High-Contrast Accessible Kiosk Overlay for Visually Impaired */
+.accessible-overlay {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #000000;
+  z-index: 9999;
+  padding: 2.5rem;
+  box-sizing: border-box;
+  transition: opacity 0.25s ease, visibility 0.25s ease;
+  pointer-events: none;
+}
+
+.accessible-overlay.hidden {
+  opacity: 0;
+  visibility: hidden;
+}
+
+.overlay-content {
+  max-width: 92vw;
+  text-align: center;
+}
+
+.overlay-text {
+  color: #ffffff;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  font-size: clamp(2.2rem, 5.5vw, 4.5rem);
+  font-weight: 800;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  text-shadow: 0 4px 24px rgba(0, 0, 0, 0.95);
+  word-break: break-word;
+}

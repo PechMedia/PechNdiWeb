@@ -11,8 +11,9 @@ from typing import Dict, Any
 logger = logging.getLogger("config_manager")
 
 DEFAULT_SETTINGS = {
+    "port": 8123,
     "server": {
-        "http_port": 8025,
+        "http_port": 8123,
         "bind_address": "0.0.0.0",
     },
     "ndi": {
@@ -21,10 +22,10 @@ DEFAULT_SETTINGS = {
         "low_bandwidth": False,
     },
     "video": {
-        "target_width": 0,    # 0 = keep source resolution
-        "target_height": 0,   # 0 = keep source resolution
-        "target_fps": 0,      # 0 = keep source fps
-        "bitrate_kbps": 6000,
+        "target_width": 1280,  # 720p low-bandwidth tablet streaming
+        "target_height": 720,  # 720p low-bandwidth tablet streaming
+        "target_fps": 30,     # 30 fps low CPU
+        "bitrate_kbps": 2500, # 2.5 Mbps optimized for LAN Wi-Fi
         "codec": "H264",
     },
     "audio": {
@@ -53,6 +54,12 @@ class ConfigManager:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     user_data = json.load(f)
                     self.settings = self._merge_defaults(user_data, DEFAULT_SETTINGS)
+                    # Keep top-level "port" and "server.http_port" in sync
+                    if "port" in user_data:
+                        self.settings["port"] = user_data["port"]
+                        self.settings.setdefault("server", {})["http_port"] = user_data["port"]
+                    elif "server" in user_data and "http_port" in user_data["server"]:
+                        self.settings["port"] = user_data["server"]["http_port"]
                     logger.info(f"Loaded configuration from {self.config_path}")
                     return self.settings
             except Exception as e:
