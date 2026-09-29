@@ -1,19 +1,18 @@
-# PECH NDI-to-WebRTC Low-Latency LAN Streaming Bridge
+# PECH NDI-to-WebRTC Low-Latency Tablet Streaming Bridge
 
-A high-performance Windows application packaged as a **single standalone executable (`PECH_NDI_WebRTC.exe`)** that decodes live **NDI** and **NDI|HX** video/audio streams and encodes them into **near-zero latency (<50ms)** WebRTC streams for real-time viewing on any browser or device across your Local Area Network (LAN).
+A high-performance Windows application packaged as a **single standalone executable (`PECH_NDI_WebRTC.exe`)** and a **Windows Setup Installer (`PECH_NDI_WebRTC_Setup.exe`)** that decodes live **NDI** and **NDI|HX** slide streams and transcodes them into **near-zero latency (<50ms)** WebRTC streams for kiosk Android tablets used by visually impaired church members.
 
 ---
 
 ## Key Features
 
-- **Single Standalone Executable**: All web assets, WebRTC engines, and UI libraries bundled into `PECH_NDI_WebRTC.exe` (no Python installation required).
-- **Near-Zero Latency**: Direct 1-frame uncompressed NDI memory pipeline to WebRTC RTP/SRTP over UDP.
-- **NDI & NDI|HX Support**: Discovers and decodes full-bandwidth NDI (SpeedHQ/BGRX) and NDI|HX streams via NDI 6 SDK.
-- **Dual Execution Modes**:
-  - **Interactive Desktop UI (Default)**: Double-click `PECH_NDI_WebRTC.exe` to launch the Windows 11 dashboard with live NDI discovery, parameter tuning, preview monitor, and QR code sharing.
-  - **Headless Mode (`--headless`)**: Runs quietly in the background as a CLI app or Windows service, reading from `settings.json`.
-- **Any-Device LAN Playback**: Any phone, tablet, PC, Mac, or Smart TV on the same Wi-Fi/LAN can open the stream without installing any apps or browser extensions.
-- **JSON Configuration**: Complete settings persistence in `settings.json`.
+- **Windows Setup Installer**: Automated single-file installer (`PECH_NDI_WebRTC_Setup.exe`) that creates Desktop and Start Menu shortcuts.
+- **Standalone Executable**: Portable single-file binary (`PECH_NDI_WebRTC.exe`) with no Python installation required.
+- **Near-Zero Latency**: Direct 1-frame fresh buffer pipeline eliminates buffer lag (<50ms latency).
+- **Strictly Muted Video-Only Stream**: 100% compliant with mobile browser autoplay policies, ensuring Android tablets play immediately without needing any screen tap.
+- **REST API State Control & Pause Overlay**: `POST /api/stream/control` allows vMix or operators to pause the stream and display custom text in both the video frame (Pillow static black card) and the tablet DOM overlay (large, high-contrast text).
+- **Kiosk Hardened**: Context menu, gesture zoom, and double-tap zoom disabled; Screen Wake Lock API prevents tablet screen sleep.
+- **JSON Configuration**: Default port `8123` and 720p 30fps streaming parameters in `settings.json`.
 
 ---
 
@@ -21,33 +20,47 @@ A high-performance Windows application packaged as a **single standalone executa
 
 ### 1. Requirements
 - Windows 10 / Windows 11 (64-bit)
-- NDI 6 Runtime or NDI 6 Tools installed (`Processing.NDI.Lib.x64.dll`)
+- Free [NDI 6 Tools / Runtime for Windows](https://ndi.video/tools/) installed (`Processing.NDI.Lib.x64.dll`)
 
-### 2. Running with Desktop UI
-Double-click `PECH_NDI_WebRTC.exe` or run:
+### 2. Running the Server
+Double-click `start_server.bat` or run:
 ```powershell
-.\PECH_NDI_WebRTC.exe
+.\dist\PECH_NDI_WebRTC.exe --config settings.json
 ```
 
-### 3. Running in Headless Mode
+Or from Python source:
 ```powershell
-.\PECH_NDI_WebRTC.exe --headless
+pip install -r requirements.txt
+python main.py
 ```
 
-#### CLI Options
-```powershell
-.\PECH_NDI_WebRTC.exe --headless --port 8025 --source "STUDIO-PC (Camera 1)"
+### 3. Viewing on Tablets
+Open any browser on the Android tablet and browse to:
+```text
+http://<WINDOWS_PC_IP>:8123
 ```
-- `--headless`: Run as a background service/daemon without UI.
-- `--port <PORT>`: Web / WebRTC signaling port (default: 8025).
-- `--source "<NAME>"`: Override NDI source name.
-- `--config <PATH>`: Custom path to JSON configuration file.
-- `--bind <IP>`: IP address to bind to (default: `0.0.0.0`).
 
 ---
 
-## Rebuilding the Single `.exe`
-```powershell
-python build_exe.py
-```
-Output: `dist\PECH_NDI_WebRTC.exe`
+## REST API Control
+
+- **Pause with Message:**
+  ```http
+  POST /api/stream/control
+  Content-Type: application/json
+
+  {
+    "action": "pause",
+    "message": "Pausing - slides will show again after video has played"
+  }
+  ```
+- **Resume Live Slides:**
+  ```http
+  POST /api/stream/control
+  Content-Type: application/json
+
+  { "action": "resume" }
+  ```
+- **Inspect Stream Health:** `GET /api/stream/status`
+
+For complete instructions, vMix automation scripts, and configuration references, see the **[INSTALLATION_AND_USAGE_GUIDE.md](file:///d:/PECHNDIWEB/INSTALLATION_AND_USAGE_GUIDE.md)**.

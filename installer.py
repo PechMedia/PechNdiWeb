@@ -34,7 +34,7 @@ def create_shortcut(target, shortcut_path, description="PECH NDI-to-WebRTC Bridg
 def main():
     print("=" * 64)
     print(" PECH NDI-to-WebRTC Bridge - Windows Setup Installer")
-    print(" Version: 1.0.17")
+    print(" Version: 1.0.18")
     print(" Target:  Low-Latency WebRTC Tablet Streaming for Churches")
     print("=" * 64)
 
