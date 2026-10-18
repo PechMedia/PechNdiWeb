@@ -10,6 +10,7 @@ import logging
 import os
 import socket
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Set, Dict, Optional, Any
 
 import av
@@ -24,18 +25,15 @@ import uvicorn
 from pydantic import BaseModel
 
 from aiortc import (
+    MediaStreamTrack,
     RTCPeerConnection,
+    RTCRtpSender,
     RTCSessionDescription,
     VideoStreamTrack,
     RTCConfiguration,
 )
-import aiortc.codecs.h264
-import aiortc.codecs.vpx
 import aiortc.rtcpeerconnection
-import aiortc.rtcrtpsender
 from aiortc.codecs import CODECS
-from aiortc.codecs.h264 import H264Encoder
-from aiortc.rtcrtpsender import get_encoder as _aiortc_get_encoder
 from aiortc.rtcrtpparameters import RTCRtpCodecParameters, RTCRtcpFeedback
 from aiortc.sdp import H264Profile, parse_h264_profile_level_id
 from av.video.frame import PictureType
@@ -59,64 +57,36 @@ def get_local_ip() -> str:
     return ip
 
 
-def apply_encoder_bitrate_settings(config: ConfigManager):
-    """Applies video.bitrate_kbps as the encoders' start and ceiling bitrate."""
-    kbps = int(config.get("video", "bitrate_kbps", 0) or 0)
-    if kbps <= 0:
-        return
-    bps = kbps * 1000
-    for mod in (aiortc.codecs.h264, aiortc.codecs.vpx):
-        mod.DEFAULT_BITRATE = bps
-        mod.MAX_BITRATE = max(bps, mod.MIN_BITRATE)
-
-
-class H264HighProfileEncoder(H264Encoder):
-    """Encodes H.264 High profile (CABAC + 8x8 transforms) for sharper text/detail."""
-
-    def _encode_frame(self, frame, force_keyframe):
-        if self.codec and (
-            frame.width != self.codec.width
-            or frame.height != self.codec.height
-            or abs(self.target_bitrate - self.codec.bit_rate) / self.codec.bit_rate > 0.1
-        ):
-            self.buffer_data = b""
-            self.buffer_pts = None
-            self.codec = None
-
-        if force_keyframe:
-            frame.pict_type = PictureType.I
-        else:
-            frame.pict_type = PictureType.NONE
-
-        if self.codec is None:
-            self.codec = av.CodecContext.create("libx264", "w")
-            self.codec.width = frame.width
-            self.codec.height = frame.height
-            self.codec.bit_rate = self.target_bitrate
-            self.codec.pix_fmt = "yuv420p"
-            self.codec.framerate = fractions.Fraction(aiortc.codecs.h264.MAX_FRAME_RATE, 1)
-            self.codec.time_base = fractions.Fraction(1, aiortc.codecs.h264.MAX_FRAME_RATE)
-            self.codec.options = {
-                "level": "51" if frame.width * frame.height > 1920 * 1080 else "42",
-                "tune": "zerolatency",
-                "preset": "veryfast",
-            }
-            self.codec.profile = "High"
-
-        data_to_send = b""
-        for package in self.codec.encode(frame):
-            data_to_send += bytes(package)
-
-        if data_to_send:
-            yield from self._split_bitstream(data_to_send)
-
-
 _H264_HIGH_PROFILES = (H264Profile.PROFILE_HIGH, H264Profile.PROFILE_CONSTRAINED_HIGH)
 _H264_HIGH_APPLIED = False
 
 
+def _h264_profile(codec):
+    try:
+        return parse_h264_profile_level_id(
+            str(codec.parameters.get("profile-level-id", "42E01F"))
+        )[0]
+    except ValueError:
+        return None
+
+
+def _h264_sort_key(codec):
+    profile = _h264_profile(codec)
+    if profile == H264Profile.PROFILE_HIGH:
+        return 0
+    return 1 if profile in _H264_HIGH_PROFILES else 2
+
+
+def _h264_codec_preferences():
+    """H.264-only codec list (High first) so every viewer can take the shared bitstream."""
+    caps = RTCRtpSender.getCapabilities("video").codecs
+    h264 = sorted((c for c in caps if c.mimeType.lower() == "video/h264"), key=_h264_sort_key)
+    rtx = [c for c in caps if c.mimeType.lower() == "video/rtx"]
+    return h264 + rtx
+
+
 def apply_h264_high_profile_support():
-    """Advertises and encodes H.264 High profile when supported."""
+    """Advertises H.264 High profile when supported."""
     global _H264_HIGH_APPLIED
     if _H264_HIGH_APPLIED:
         return
@@ -141,14 +111,6 @@ def apply_h264_high_profile_support():
             )
         )
 
-    def _h264_profile(codec):
-        try:
-            return parse_h264_profile_level_id(
-                str(codec.parameters.get("profile-level-id", "42E01F"))
-            )[0]
-        except ValueError:
-            return None
-
     _orig_find_common = aiortc.rtcpeerconnection.find_common_codecs
 
     def _find_common_codecs_prefer_high(local_codecs, remote_codecs):
@@ -164,13 +126,6 @@ def apply_h264_high_profile_support():
         return high + rest
 
     aiortc.rtcpeerconnection.find_common_codecs = _find_common_codecs_prefer_high
-
-    def _get_encoder(codec):
-        if codec.mimeType.lower() == "video/h264" and _h264_profile(codec) in _H264_HIGH_PROFILES:
-            return H264HighProfileEncoder()
-        return _aiortc_get_encoder(codec)
-
-    aiortc.rtcrtpsender.get_encoder = _get_encoder
 
 
 def create_text_frame(text: str, width: int = 1280, height: int = 720) -> np.ndarray:
@@ -376,10 +331,7 @@ class NDIVideoTrack(VideoStreamTrack):
                     img_arr = raw_data[: height * width * 4].reshape((height, width, 4))
                     video_frame = av.VideoFrame.from_ndarray(img_arr[:, :, :3], format="bgr24")
 
-                # Scale to target resolution (e.g. 720p for low-bandwidth tablet streaming)
-                if target_w > 0 and target_h > 0 and (video_frame.width != target_w or video_frame.height != target_h):
-                    video_frame = video_frame.reformat(width=target_w, height=target_h)
-
+                # Scaling to target resolution is done by SharedVideoEncoder off the event loop
                 video_frame.pts = pts
                 video_frame.time_base = self._time_base
                 self._last_emit_time = time.perf_counter()
@@ -396,6 +348,157 @@ class NDIVideoTrack(VideoStreamTrack):
         return standby
 
 
+class _Subscriber:
+    def __init__(self):
+        self.queue: asyncio.Queue = asyncio.Queue(maxsize=3)
+        self.synced = False  # True once this viewer has received a keyframe
+
+
+class SharedVideoEncoder:
+    """
+    Encodes the stream ONCE and fans the H.264 packets out to every viewer,
+    so CPU cost stays flat no matter how many tablets are connected.
+    """
+
+    KEYFRAME_MIN_INTERVAL = 0.5  # seconds between forced keyframes (avoids PLI storms)
+
+    def __init__(self, receiver: NDIReceiver, config: ConfigManager, state_mgr: StreamStateManager):
+        self.config = config
+        self.source = NDIVideoTrack(receiver, config, state_mgr)
+        self._subscribers: Set[_Subscriber] = set()
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="H264_Encoder")
+        self._codec = None
+        self._codec_key = None
+        self._frame_index = 0
+        self._keyframe_requested = False
+        self._last_forced = 0.0
+        self._task: Optional[asyncio.Task] = None
+
+    def subscribe(self) -> _Subscriber:
+        sub = _Subscriber()
+        self._subscribers.add(sub)
+        self.request_keyframe()
+        if self._task is None:
+            self._task = asyncio.get_running_loop().create_task(self._run())
+        return sub
+
+    def unsubscribe(self, sub: _Subscriber):
+        self._subscribers.discard(sub)
+
+    def request_keyframe(self):
+        self._keyframe_requested = True
+
+    def _encode(self, frame, force_keyframe, width, height, bps, fps):
+        key = (width, height, bps, fps)
+        if self._codec is None or self._codec_key != key:
+            codec = av.CodecContext.create("libx264", "w")
+            codec.width = width
+            codec.height = height
+            codec.pix_fmt = "yuv420p"
+            codec.bit_rate = bps
+            codec.framerate = fractions.Fraction(fps, 1)
+            codec.time_base = fractions.Fraction(1, fps)
+            codec.gop_size = fps * 2  # periodic keyframe so dropped viewers resync within 2s
+            codec.options = {
+                "level": "51" if width * height > 1920 * 1080 else "42",
+                "tune": "zerolatency",
+                "preset": "veryfast",
+                "forced-idr": "1",
+                "maxrate": str(bps),  # VBV cap smooths keyframe bursts on WiFi
+                "bufsize": str(bps),
+            }
+            codec.profile = "High"
+            self._codec = codec
+            self._codec_key = key
+            self._frame_index = 0
+
+        out = frame.reformat(width=width, height=height, format="yuv420p")
+        out.pts = self._frame_index
+        out.time_base = self._codec.time_base
+        out.pict_type = PictureType.I if force_keyframe else PictureType.NONE
+        self._frame_index += 1
+
+        packets = self._codec.encode(out)
+        for p in packets:
+            p.pts = frame.pts
+            p.time_base = frame.time_base
+        return packets
+
+    def _publish(self, pkt):
+        for sub in list(self._subscribers):
+            if not sub.synced:
+                if not pkt.is_keyframe:
+                    continue
+                sub.synced = True
+            if sub.queue.full():
+                # Viewer fell behind: drop its backlog rather than accumulate latency
+                while not sub.queue.empty():
+                    sub.queue.get_nowait()
+                sub.synced = pkt.is_keyframe
+                if not sub.synced:
+                    continue
+            sub.queue.put_nowait(pkt)
+
+    async def _run(self):
+        loop = asyncio.get_running_loop()
+        while True:
+            try:
+                if not self._subscribers:
+                    await asyncio.sleep(0.05)
+                    continue
+
+                frame = await self.source.recv()
+
+                force = False
+                now = time.perf_counter()
+                if self._keyframe_requested and now - self._last_forced >= self.KEYFRAME_MIN_INTERVAL:
+                    force = True
+                    self._keyframe_requested = False
+                    self._last_forced = now
+
+                width, height = self.source._get_target_dims()
+                fps = int(self.config.get("video", "target_fps", 30) or 30)
+                bps = int(self.config.get("video", "bitrate_kbps", 2500) or 2500) * 1000
+
+                packets = await loop.run_in_executor(
+                    self._executor, self._encode, frame, force, width, height, bps, fps
+                )
+                for pkt in packets:
+                    self._publish(pkt)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"Shared encoder error: {e}")
+                await asyncio.sleep(0.1)
+
+    async def stop(self):
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._task = None
+        self._executor.shutdown(wait=False)
+
+
+class EncodedRelayTrack(MediaStreamTrack):
+    """Per-viewer track that relays pre-encoded packets from the SharedVideoEncoder."""
+    kind = "video"
+
+    def __init__(self, encoder: SharedVideoEncoder):
+        super().__init__()
+        self._encoder = encoder
+        self._sub = encoder.subscribe()
+
+    async def recv(self):
+        return await self._sub.queue.get()
+
+    def stop(self):
+        super().stop()
+        self._encoder.unsubscribe(self._sub)
+
+
 class StreamControlRequest(BaseModel):
     action: str
     message: Optional[str] = ""
@@ -410,7 +513,6 @@ class WebRTCStreamServer:
     def __init__(self, config: ConfigManager, web_dir: str):
         self.config = config
         self.web_dir = web_dir
-        apply_encoder_bitrate_settings(config)
         apply_h264_high_profile_support()
 
         self.state_mgr = StreamStateManager()
@@ -418,13 +520,14 @@ class WebRTCStreamServer:
             source_name=self.config.get("ndi", "source_name", ""),
             low_bandwidth=self.config.get("ndi", "low_bandwidth", False),
         )
+        self.encoder = SharedVideoEncoder(self.receiver, self.config, self.state_mgr)
         self.pcs: Set[RTCPeerConnection] = set()
         self.finder = None
 
         self.app = FastAPI(
             title="PECH NDI-to-WebRTC Streaming Bridge",
             description="Ultra-low latency NDI to WebRTC/WHEP tablet streamer with REST state control",
-            version="1.0.20",
+            version="1.0.21",
         )
 
         self.app.add_middleware(
@@ -574,7 +677,6 @@ class WebRTCStreamServer:
             try:
                 data = await request.json()
                 self.config.update(data)
-                apply_encoder_bitrate_settings(self.config)
                 new_source = self.config.get("ndi", "source_name", "")
                 if new_source != self.receiver.source_name:
                     self.receiver.connect(new_source)
@@ -700,13 +802,19 @@ class WebRTCStreamServer:
         self.pcs.add(pc)
 
         # Add video track ONLY (strictly no audio track to comply with mobile autoplay policies)
-        video_track = NDIVideoTrack(self.receiver, self.config, self.state_mgr)
-        pc.addTrack(video_track)
+        video_track = EncodedRelayTrack(self.encoder)
+        sender = pc.addTrack(video_track)
+        # Keyframe requests (PLI/FIR) from this viewer go to the shared encoder
+        sender._send_keyframe = self.encoder.request_keyframe
+        for t in pc.getTransceivers():
+            if t.sender is sender:
+                t.setCodecPreferences(_h264_codec_preferences())
 
         @pc.on("connectionstatechange")
         async def on_connectionstatechange():
             logger.info(f"PeerConnection state is {pc.connectionState}")
             if pc.connectionState in ("failed", "closed", "disconnected"):
+                video_track.stop()
                 await pc.close()
                 self.pcs.discard(pc)
 
@@ -756,6 +864,7 @@ class WebRTCStreamServer:
                 pass
         self.pcs.clear()
 
+        await self.encoder.stop()
         self.receiver.stop()
         if self.finder:
             self.finder.close()

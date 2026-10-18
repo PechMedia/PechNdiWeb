@@ -58,6 +58,9 @@ class NDIWebRTCPlayer {
       if (evt.track && evt.track.kind === 'video' && 'playoutDelayHint' in evt.receiver) {
         try { evt.receiver.playoutDelayHint = 0; } catch (e) {}
       }
+      if (evt.track && evt.track.kind === 'video' && 'jitterBufferTarget' in evt.receiver) {
+        try { evt.receiver.jitterBufferTarget = 0; } catch (e) {}
+      }
       if (this.video.srcObject !== evt.streams[0]) {
         this.video.srcObject = evt.streams[0];
         this.video.muted = true;
@@ -142,6 +145,9 @@ class NDIWebRTCPlayer {
       if (this.pc !== pc) return;
       if (evt.track && evt.track.kind === 'video' && 'playoutDelayHint' in evt.receiver) {
         try { evt.receiver.playoutDelayHint = 0; } catch (e) {}
+      }
+      if (evt.track && evt.track.kind === 'video' && 'jitterBufferTarget' in evt.receiver) {
+        try { evt.receiver.jitterBufferTarget = 0; } catch (e) {}
       }
       if (this.video.srcObject !== evt.streams[0]) {
         this.video.srcObject = evt.streams[0];
