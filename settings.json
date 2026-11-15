@@ -7,7 +7,7 @@
   "ndi": {
     "source_name": "",
     "color_format": "FASTEST",
-    "low_bandwidth": false
+    "low_bandwidth": true
   },
   "video": {
     "target_width": 1280,

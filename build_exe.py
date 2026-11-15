@@ -125,7 +125,7 @@ def build():
         print(f"  --> Note: Setup Installer build error: {e}")
 
     # 5. Generate Inno Setup script (.iss)
-    app_version = "1.0.23"
+    app_version = "1.0.24"
     config_js = os.path.join(base_dir, "config.js")
     if os.path.exists(config_js):
         with open(config_js, "r", encoding="utf-8") as f:

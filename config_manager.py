@@ -19,7 +19,7 @@ DEFAULT_SETTINGS = {
     "ndi": {
         "source_name": "",
         "color_format": "FASTEST",
-        "low_bandwidth": False,
+        "low_bandwidth": True,
     },
     "video": {
         "target_width": 1280,  # 720p low-bandwidth tablet streaming

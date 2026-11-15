@@ -1,7 +1,7 @@
 ; Inno Setup Script for PECH NDI-to-WebRTC Bridge
 [Setup]
 AppName=PECH NDI-to-WebRTC Bridge
-AppVersion=1.0.23
+AppVersion=1.0.24
 AppPublisher=PechMedia
 DefaultDirName={autopf}\PECH NDI Bridge
 DefaultGroupName=PECH NDI Bridge

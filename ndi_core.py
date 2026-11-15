@@ -281,11 +281,6 @@ class NDIReceiver:
         self.on_video_frame = None
         self._lock = threading.Lock()
         self._video_subscribers = set()
-        self.paused = False
-        self._last_sample = None
-        self._last_sample_meta = None
-        self._unchanged_count = 0
-        self._last_subscriber_notify = 0.0
         self.stats = {
             "fps": 0.0,
             "width": 0,
@@ -308,9 +303,6 @@ class NDIReceiver:
     def connect(self, source_name, url=None):
         """Connect or switch to an NDI source."""
         self.source_name = source_name
-        self._last_sample = None
-        self._last_sample_meta = None
-        self._unchanged_count = 0
         src = NDIlib_source_t(
             source_name.encode("utf-8") if source_name else None,
             url.encode("utf-8") if url else None,
@@ -357,76 +349,45 @@ class NDIReceiver:
                 fourcc = v_frame.FourCC
 
                 if v_frame.p_data and width > 0 and height > 0:
-                    if self.paused:
-                        self._last_sample = None
-                        self._unchanged_count = 0
-                        with self._lock:
-                            self.stats["width"] = width
-                            self.stats["height"] = height
-                            self.stats["frames_received"] += 1
-                            self.stats["connected"] = True
-                            self.stats["last_frame_time"] = now
-                        frame_count += 1
-                    else:
-                        # Zero-copy view for strided equality check; copy only on changed frames
-                        data_size = stride * height
-                        buf = (ctypes.c_uint8 * data_size).from_address(ctypes.addressof(v_frame.p_data.contents))
-                        raw_arr = np.frombuffer(buf, dtype=np.uint8)
-                        sample = raw_arr[::251]
-                        meta = (width, height, stride, fourcc)
+                    # Direct buffer copy to numpy without intermediate serialization
+                    data_size = stride * height
+                    buf = (ctypes.c_uint8 * data_size).from_address(ctypes.addressof(v_frame.p_data.contents))
+                    raw_arr = np.frombuffer(buf, dtype=np.uint8)
 
-                        if (
-                            meta == self._last_sample_meta
-                            and self._last_sample is not None
-                            and np.array_equal(sample, self._last_sample)
-                            and self.latest_video_frame is not None
-                        ):
-                            self._unchanged_count += 1
-                            data_buf = self.latest_video_frame["data"]
-                        else:
-                            self._unchanged_count = 0
-                            self._last_sample = sample.copy()
-                            self._last_sample_meta = meta
-                            data_buf = raw_arr.copy()
+                    video_info = {
+                        "width": width,
+                        "height": height,
+                        "stride": stride,
+                        "fourcc": fourcc,
+                        "fps_num": v_frame.frame_rate_N,
+                        "fps_den": v_frame.frame_rate_D,
+                        "timestamp": v_frame.timestamp,
+                        "data": raw_arr.copy(),
+                        "receive_time": now,
+                    }
 
-                        video_info = {
-                            "width": width,
-                            "height": height,
-                            "stride": stride,
-                            "fourcc": fourcc,
-                            "fps_num": v_frame.frame_rate_N,
-                            "fps_den": v_frame.frame_rate_D,
-                            "timestamp": v_frame.timestamp,
-                            "data": data_buf,
-                            "receive_time": now,
-                            "unchanged": self._unchanged_count > 0,
-                            "unchanged_count": self._unchanged_count,
-                        }
+                    with self._lock:
+                        self.latest_video_frame = video_info
+                        self.stats["width"] = width
+                        self.stats["height"] = height
+                        self.stats["frames_received"] += 1
+                        self.stats["connected"] = True
+                        self.stats["last_frame_time"] = now
+                        v_subs = list(self._video_subscribers)
 
-                        with self._lock:
-                            self.latest_video_frame = video_info
-                            self.stats["width"] = width
-                            self.stats["height"] = height
-                            self.stats["frames_received"] += 1
-                            self.stats["connected"] = True
-                            self.stats["last_frame_time"] = now
-                            v_subs = list(self._video_subscribers)
+                    for sub in v_subs:
+                        try:
+                            sub(video_info)
+                        except Exception:
+                            pass
 
-                        if self._unchanged_count <= 3 or (now - self._last_subscriber_notify) >= 0.33:
-                            self._last_subscriber_notify = now
-                            for sub in v_subs:
-                                try:
-                                    sub(video_info)
-                                except Exception:
-                                    pass
+                    if self.on_video_frame:
+                        try:
+                            self.on_video_frame(video_info)
+                        except Exception as e:
+                            logger.error(f"Error in on_video_frame callback: {e}")
 
-                            if self.on_video_frame:
-                                try:
-                                    self.on_video_frame(video_info)
-                                except Exception as e:
-                                    logger.error(f"Error in on_video_frame callback: {e}")
-
-                        frame_count += 1
+                    frame_count += 1
 
                 self.sdk.dll.NDIlib_recv_free_video_v2(self._p_recv, byref(v_frame))
 
