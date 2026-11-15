@@ -18,6 +18,7 @@ class NDIWebRTCPlayer {
       onStateUpdate: options.onStateUpdate || (() => {}),
       onStatsUpdate: options.onStatsUpdate || (() => {}),
     };
+    this._hasStatsCallback = typeof options.onStatsUpdate === 'function';
 
     this.pc = null;
     this.ws = null;
@@ -177,6 +178,24 @@ class NDIWebRTCPlayer {
     });
     await pc.setLocalDescription(offer);
 
+    if (pc.iceGatheringState !== 'complete') {
+      await new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          pc.removeEventListener('icegatheringstatechange', onState);
+          resolve();
+        }, 300);
+        const onState = () => {
+          if (pc.iceGatheringState === 'complete') {
+            clearTimeout(timer);
+            pc.removeEventListener('icegatheringstatechange', onState);
+            resolve();
+          }
+        };
+        pc.addEventListener('icegatheringstatechange', onState);
+      });
+    }
+    if (this.pc !== pc) return;
+
     const res = await fetch(this.options.whepUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/sdp' },
@@ -200,6 +219,15 @@ class NDIWebRTCPlayer {
     this.statsInterval = setInterval(async () => {
       if (!this.pc) return;
       try {
+        if (this.video && this.video.buffered && this.video.buffered.length > 0) {
+          const end = this.video.buffered.end(this.video.buffered.length - 1);
+          const lag = end - this.video.currentTime;
+          if (lag > 0.15) {
+            this.video.currentTime = end;
+          }
+        }
+        if (!this._hasStatsCallback) return;
+
         const stats = await this.pc.getStats();
         let fps = 0;
         let width = this.video.videoWidth || 0;

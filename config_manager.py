@@ -18,7 +18,7 @@ DEFAULT_SETTINGS = {
     },
     "ndi": {
         "source_name": "",
-        "color_format": "BGRX",
+        "color_format": "FASTEST",
         "low_bandwidth": False,
     },
     "video": {

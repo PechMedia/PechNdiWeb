@@ -25,6 +25,16 @@ NDILIB_RECV_COLOR_FORMAT_UYVY_RGBA = 3
 NDILIB_RECV_COLOR_FORMAT_FASTEST = 100
 NDILIB_RECV_COLOR_FORMAT_BEST = 101
 
+COLOR_FORMAT_MAP = {
+    "FASTEST": NDILIB_RECV_COLOR_FORMAT_FASTEST,
+    "BEST": NDILIB_RECV_COLOR_FORMAT_BEST,
+    "BGRX": NDILIB_RECV_COLOR_FORMAT_BGRX_BGRA,
+    "BGRA": NDILIB_RECV_COLOR_FORMAT_BGRX_BGRA,
+    "UYVY": NDILIB_RECV_COLOR_FORMAT_UYVY_BGRA,
+    "RGBX": NDILIB_RECV_COLOR_FORMAT_RGBX_RGBA,
+    "RGBA": NDILIB_RECV_COLOR_FORMAT_RGBX_RGBA,
+}
+
 NDILIB_RECV_BANDWIDTH_METADATA_ONLY = -10
 NDILIB_RECV_BANDWIDTH_AUDIO_ONLY = 10
 NDILIB_RECV_BANDWIDTH_LOWEST = 0
@@ -241,6 +251,8 @@ class NDIReceiver:
     def __init__(self, source_name=None, color_format=NDILIB_RECV_COLOR_FORMAT_FASTEST, low_bandwidth=False):
         self.sdk = NDISDK.get_instance()
         self.source_name = source_name
+        if isinstance(color_format, str):
+            color_format = COLOR_FORMAT_MAP.get(color_format.upper(), NDILIB_RECV_COLOR_FORMAT_FASTEST)
         self.color_format = color_format
         self.bandwidth = NDILIB_RECV_BANDWIDTH_LOWEST if low_bandwidth else NDILIB_RECV_BANDWIDTH_HIGHEST
 
@@ -268,6 +280,7 @@ class NDIReceiver:
         self.latest_video_frame = None
         self.on_video_frame = None
         self._lock = threading.Lock()
+        self._video_subscribers = set()
         self.stats = {
             "fps": 0.0,
             "width": 0,
@@ -276,6 +289,16 @@ class NDIReceiver:
             "connected": False,
             "last_frame_time": 0.0,
         }
+
+    def add_video_subscriber(self, callback):
+        """Register a callback invoked immediately when a new NDI video frame is captured."""
+        with self._lock:
+            self._video_subscribers.add(callback)
+
+    def remove_video_subscriber(self, callback):
+        """Unregister a video frame subscriber callback."""
+        with self._lock:
+            self._video_subscribers.discard(callback)
 
     def connect(self, source_name, url=None):
         """Connect or switch to an NDI source."""
@@ -304,7 +327,6 @@ class NDIReceiver:
 
     def _capture_loop(self):
         v_frame = NDIlib_video_frame_v2_t()
-        a_frame = NDIlib_audio_frame_v2_t()
         frame_count = 0
         last_stat_calc = time.perf_counter()
 
@@ -312,7 +334,7 @@ class NDIReceiver:
             frame_type = self.sdk.dll.NDIlib_recv_capture_v2(
                 self._p_recv,
                 byref(v_frame),
-                byref(a_frame),
+                None,  # Strictly video-only: do not capture or wake on NDI audio frames
                 None,
                 50,  # 50ms timeout
             )
@@ -351,6 +373,13 @@ class NDIReceiver:
                         self.stats["frames_received"] += 1
                         self.stats["connected"] = True
                         self.stats["last_frame_time"] = now
+                        v_subs = list(self._video_subscribers)
+
+                    for sub in v_subs:
+                        try:
+                            sub(video_info)
+                        except Exception:
+                            pass
 
                     if self.on_video_frame:
                         try:
@@ -361,10 +390,6 @@ class NDIReceiver:
                     frame_count += 1
 
                 self.sdk.dll.NDIlib_recv_free_video_v2(self._p_recv, byref(v_frame))
-
-            elif frame_type == NDILIB_FRAME_TYPE_AUDIO:
-                # Stream is strictly video-only (muted); immediately free audio frame
-                self.sdk.dll.NDIlib_recv_free_audio_v2(self._p_recv, byref(a_frame))
 
             # FPS computation every 1 second
             if now - last_stat_calc >= 1.0:

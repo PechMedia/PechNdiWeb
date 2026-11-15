@@ -9,7 +9,9 @@ import json
 import logging
 import os
 import socket
+import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from typing import Set, Dict, Optional, Any
 
@@ -34,6 +36,8 @@ from aiortc import (
 )
 import aiortc.rtcpeerconnection
 from aiortc.codecs import CODECS
+from aiortc.codecs.h264 import H264Encoder
+from aiortc.mediastreams import VIDEO_TIME_BASE, convert_timebase
 from aiortc.rtcrtpparameters import RTCRtpCodecParameters, RTCRtcpFeedback
 from aiortc.sdp import H264Profile, parse_h264_profile_level_id
 from av.video.frame import PictureType
@@ -42,6 +46,13 @@ from ndi_core import NDIReceiver, NDIFinder, FOURCC_UYVY, FOURCC_BGRA, FOURCC_BG
 from config_manager import ConfigManager
 
 logger = logging.getLogger("webrtc_server")
+
+if os.name == "nt":
+    try:
+        import ctypes
+        ctypes.windll.winmm.timeBeginPeriod(1)
+    except Exception:
+        pass
 
 
 def get_local_ip() -> str:
@@ -59,6 +70,21 @@ def get_local_ip() -> str:
 
 _H264_HIGH_PROFILES = (H264Profile.PROFILE_HIGH, H264Profile.PROFILE_CONSTRAINED_HIGH)
 _H264_HIGH_APPLIED = False
+
+_PACKET_CACHE_LOCK = threading.Lock()
+_PACKET_PACK_CACHE: "OrderedDict[int, tuple[av.Packet, list[bytes], int]]" = OrderedDict()
+
+
+def prepack_h264_packet(pkt: av.Packet) -> tuple[list[bytes], int]:
+    """Splits and RTP-packetizes an encoded H.264 packet once off the event loop."""
+    packages = H264Encoder._split_bitstream(bytes(pkt))
+    payloads = H264Encoder._packetize(packages)
+    timestamp = convert_timebase(pkt.pts, pkt.time_base, VIDEO_TIME_BASE)
+    with _PACKET_CACHE_LOCK:
+        _PACKET_PACK_CACHE[id(pkt)] = (pkt, payloads, timestamp)
+        while len(_PACKET_PACK_CACHE) > 32:
+            _PACKET_PACK_CACHE.popitem(last=False)
+    return payloads, timestamp
 
 
 def _h264_profile(codec):
@@ -127,6 +153,17 @@ def apply_h264_high_profile_support():
 
     aiortc.rtcpeerconnection.find_common_codecs = _find_common_codecs_prefer_high
 
+    _orig_h264_pack = H264Encoder.pack
+
+    def _cached_h264_pack(self, packet):
+        with _PACKET_CACHE_LOCK:
+            cached = _PACKET_PACK_CACHE.get(id(packet))
+        if cached is not None and cached[0] is packet:
+            return cached[1], cached[2]
+        return _orig_h264_pack(self, packet)
+
+    H264Encoder.pack = _cached_h264_pack
+
 
 def create_text_frame(text: str, width: int = 1280, height: int = 720) -> np.ndarray:
     """Renders high-contrast centered text on a black 16:9 canvas using PIL."""
@@ -176,6 +213,13 @@ def create_text_frame(text: str, width: int = 1280, height: int = 720) -> np.nda
     return np.array(img)
 
 
+def rgb_to_yuv420p_ndarray(rgb: np.ndarray, width: int, height: int) -> np.ndarray:
+    """Pre-converts an RGB24 array once into a contiguous YUV420p ndarray."""
+    return av.VideoFrame.from_ndarray(rgb, format="rgb24").reformat(
+        width=width, height=height, format="yuv420p"
+    ).to_ndarray()
+
+
 class StreamStateManager:
     """Manages stream pause/resume state and pushes broadcast updates to clients."""
 
@@ -186,6 +230,8 @@ class StreamStateManager:
         self._lock = asyncio.Lock()
         self._cached_frame: Optional[np.ndarray] = None
         self._cached_key: Optional[str] = None
+        self._cached_yuv_arr: Optional[np.ndarray] = None
+        self._cached_yuv_key: Optional[str] = None
 
     @property
     def is_paused(self) -> bool:
@@ -221,11 +267,19 @@ class StreamStateManager:
             self._cached_key = key
         return self._cached_frame
 
+    def get_pause_yuv_frame(self, width: int = 1280, height: int = 720) -> av.VideoFrame:
+        key = f"{self.message}_{width}_{height}"
+        if self._cached_yuv_arr is None or self._cached_yuv_key != key:
+            rgb = self.get_pause_frame(width, height)
+            self._cached_yuv_arr = rgb_to_yuv420p_ndarray(rgb, width, height)
+            self._cached_yuv_key = key
+        return av.VideoFrame.from_ndarray(self._cached_yuv_arr, format="yuv420p")
+
 
 class NDIVideoTrack(VideoStreamTrack):
     """
     Ultra-low latency Video Track bridging NDI frames into WebRTC.
-    When paused, broadcasts a clean static black frame with centered text.
+    Uses event-driven wakeup from NDIReceiver and skips reformat on cached static screens.
     """
     kind = "video"
 
@@ -238,58 +292,110 @@ class NDIVideoTrack(VideoStreamTrack):
         self._last_pts = 0
         self._clock_rate = 90000
         self._time_base = fractions.Fraction(1, self._clock_rate)
-        self._standby_frame_arr = None
+        self._standby_yuv_arr = None
+        self._standby_yuv_dims = None
+        self._last_src_dims = (1280, 720)
         self._last_processed_receive_time = 0.0
         self._last_emit_time = 0.0
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._event = asyncio.Event()
+        self.receiver.add_video_subscriber(self._on_video_frame)
 
-    def _get_target_dims(self):
-        target_w = int(self.config.get("video", "target_width", 1280) or 1280)
-        target_h = int(self.config.get("video", "target_height", 720) or 720)
+    def _on_video_frame(self, frame_info):
+        if self._loop and not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(self._event.set)
+
+    def stop(self):
+        super().stop()
+        self.receiver.remove_video_subscriber(self._on_video_frame)
+
+    def _get_target_dims(self, src_w: int = 1280, src_h: int = 720):
+        raw_w = self.config.get("video", "target_width", 1280)
+        raw_h = self.config.get("video", "target_height", 720)
+        target_w = 1280 if raw_w is None else int(raw_w)
+        target_h = 720 if raw_h is None else int(raw_h)
+        if target_w <= 0 or target_h <= 0:
+            return (src_w if src_w > 0 else 1280), (src_h if src_h > 0 else 720)
         return target_w, target_h
 
-    def _get_standby_frame(self, width: int, height: int) -> np.ndarray:
-        if self._standby_frame_arr is None or self._standby_frame_arr.shape[:2] != (height, width):
-            self._standby_frame_arr = create_text_frame("Waiting for Slides...", width=width, height=height)
-        return self._standby_frame_arr
+    def _get_target_fps(self) -> int:
+        raw_fps = self.config.get("video", "target_fps", 30)
+        return 30 if raw_fps is None else int(raw_fps)
 
-    async def recv(self):
-        if self._start_time is None:
-            self._start_time = time.perf_counter()
+    def _get_standby_yuv_frame(self, width: int, height: int) -> av.VideoFrame:
+        if self._standby_yuv_arr is None or self._standby_yuv_dims != (width, height):
+            rgb = create_text_frame("Waiting for Slides...", width=width, height=height)
+            self._standby_yuv_arr = rgb_to_yuv420p_ndarray(rgb, width, height)
+            self._standby_yuv_dims = (width, height)
+        return av.VideoFrame.from_ndarray(self._standby_yuv_arr, format="yuv420p")
 
-        target_fps = int(self.config.get("video", "target_fps", 30) or 30)
-        if target_fps > 0 and self._last_emit_time > 0:
-            wait = (self._last_emit_time + 1.0 / target_fps) - time.perf_counter()
-            if wait > 0:
-                await asyncio.sleep(wait)
-
+    def _next_pts(self) -> int:
         now = time.perf_counter()
         elapsed = now - self._start_time
         pts = int(elapsed * self._clock_rate)
         if pts <= self._last_pts:
             pts = self._last_pts + 1
         self._last_pts = pts
+        return pts
 
-        target_w, target_h = self._get_target_dims()
+    async def recv(self):
+        if self._loop is None:
+            self._loop = asyncio.get_running_loop()
+
+        if self._start_time is None:
+            self._start_time = time.perf_counter()
+
+        target_fps = self._get_target_fps()
+        target_w, target_h = self._get_target_dims(*self._last_src_dims)
 
         # 1. Check if stream is in paused state
         if self.state_mgr.is_paused:
-            frame_arr = self.state_mgr.get_pause_frame(target_w, target_h)
-            video_frame = av.VideoFrame.from_ndarray(frame_arr, format="rgb24")
-            video_frame.pts = pts
+            eff_fps = target_fps if target_fps > 0 else 30
+            if self._last_emit_time > 0:
+                wait = (self._last_emit_time + 1.0 / eff_fps) - time.perf_counter()
+                if wait > 0:
+                    await asyncio.sleep(wait)
+            video_frame = self.state_mgr.get_pause_yuv_frame(target_w, target_h)
+            video_frame.pts = self._next_pts()
             video_frame.time_base = self._time_base
             self._last_emit_time = time.perf_counter()
             return video_frame
 
-        # 2. Check for live NDI frame
+        # Rate-limit high-FPS sources without adding beat-frequency delay at matching FPS
+        if target_fps > 0 and self._last_emit_time > 0:
+            wait = (self._last_emit_time + 0.85 / target_fps) - time.perf_counter()
+            if wait > 0:
+                await asyncio.sleep(wait)
+
+        # 2. Event-driven check for fresh NDI frame
         frame_info = None
-        for _ in range(10):
+        self._event.clear()
+        with self.receiver._lock:
+            fi = self.receiver.latest_video_frame
+        if fi and fi.get("receive_time", 0) > self._last_processed_receive_time:
+            frame_info = fi
+            self._last_processed_receive_time = frame_info["receive_time"]
+        else:
+            eff_fps = target_fps if target_fps > 0 else 30
+            recent_live = fi is not None and (time.perf_counter() - fi.get("receive_time", 0)) < 1.0
+            wait_timeout = 0.10 if recent_live else (1.0 / eff_fps)
+            try:
+                await asyncio.wait_for(self._event.wait(), timeout=wait_timeout)
+            except asyncio.TimeoutError:
+                pass
+            self._event.clear()
             with self.receiver._lock:
                 fi = self.receiver.latest_video_frame
-            if fi and fi.get("receive_time", 0) > getattr(self, '_last_processed_receive_time', 0):
+            if fi and fi.get("receive_time", 0) > self._last_processed_receive_time:
                 frame_info = fi
                 self._last_processed_receive_time = frame_info["receive_time"]
-                break
-            await asyncio.sleep(0.005)
+
+        if self.state_mgr.is_paused:
+            video_frame = self.state_mgr.get_pause_yuv_frame(target_w, target_h)
+            video_frame.pts = self._next_pts()
+            video_frame.time_base = self._time_base
+            self._last_emit_time = time.perf_counter()
+            return video_frame
 
         if not frame_info:
             with self.receiver._lock:
@@ -304,6 +410,7 @@ class NDIVideoTrack(VideoStreamTrack):
                 stride = frame_info["stride"]
                 raw_data = frame_info["data"]
                 fourcc = frame_info["fourcc"]
+                self._last_src_dims = (width, height)
 
                 if fourcc == FOURCC_UYVY:
                     row_bytes = width * 2
@@ -332,7 +439,7 @@ class NDIVideoTrack(VideoStreamTrack):
                     video_frame = av.VideoFrame.from_ndarray(img_arr[:, :, :3], format="bgr24")
 
                 # Scaling to target resolution is done by SharedVideoEncoder off the event loop
-                video_frame.pts = pts
+                video_frame.pts = self._next_pts()
                 video_frame.time_base = self._time_base
                 self._last_emit_time = time.perf_counter()
                 return video_frame
@@ -340,9 +447,8 @@ class NDIVideoTrack(VideoStreamTrack):
                 logger.warning(f"Error packing video frame: {e}")
 
         # 3. No live frames yet: output waiting standby frame
-        standby_arr = self._get_standby_frame(target_w, target_h)
-        standby = av.VideoFrame.from_ndarray(standby_arr, format="rgb24")
-        standby.pts = pts
+        standby = self._get_standby_yuv_frame(target_w, target_h)
+        standby.pts = self._next_pts()
         standby.time_base = self._time_base
         self._last_emit_time = time.perf_counter()
         return standby
@@ -360,7 +466,7 @@ class SharedVideoEncoder:
     so CPU cost stays flat no matter how many tablets are connected.
     """
 
-    KEYFRAME_MIN_INTERVAL = 0.5  # seconds between forced keyframes (avoids PLI storms)
+    KEYFRAME_MIN_INTERVAL = 0.25  # seconds between forced keyframes (avoids PLI storms)
 
     def __init__(self, receiver: NDIReceiver, config: ConfigManager, state_mgr: StreamStateManager):
         self.config = config
@@ -389,30 +495,36 @@ class SharedVideoEncoder:
         self._keyframe_requested = True
 
     def _encode(self, frame, force_keyframe, width, height, bps, fps):
-        key = (width, height, bps, fps)
+        eff_fps = fps if fps > 0 else 30
+        key = (width, height, bps, eff_fps)
         if self._codec is None or self._codec_key != key:
             codec = av.CodecContext.create("libx264", "w")
             codec.width = width
             codec.height = height
             codec.pix_fmt = "yuv420p"
             codec.bit_rate = bps
-            codec.framerate = fractions.Fraction(fps, 1)
-            codec.time_base = fractions.Fraction(1, fps)
-            codec.gop_size = fps * 2  # periodic keyframe so dropped viewers resync within 2s
+            codec.framerate = fractions.Fraction(eff_fps, 1)
+            codec.time_base = fractions.Fraction(1, eff_fps)
+            codec.gop_size = eff_fps * 2  # periodic keyframe so dropped viewers resync within 2s
             codec.options = {
                 "level": "51" if width * height > 1920 * 1080 else "42",
                 "tune": "zerolatency",
                 "preset": "veryfast",
                 "forced-idr": "1",
-                "maxrate": str(bps),  # VBV cap smooths keyframe bursts on WiFi
-                "bufsize": str(bps),
+                "maxrate": str(bps),
+                "bufsize": str(max(bps // 2, 250000)),  # 0.5s VBV cap smooths keyframe bursts on Wi-Fi
+                "rc-lookahead": "0",
+                "sync-lookahead": "0",
             }
             codec.profile = "High"
             self._codec = codec
             self._codec_key = key
             self._frame_index = 0
 
-        out = frame.reformat(width=width, height=height, format="yuv420p")
+        if frame.format.name == "yuv420p" and frame.width == width and frame.height == height:
+            out = frame
+        else:
+            out = frame.reformat(width=width, height=height, format="yuv420p")
         out.pts = self._frame_index
         out.time_base = self._codec.time_base
         out.pict_type = PictureType.I if force_keyframe else PictureType.NONE
@@ -422,6 +534,7 @@ class SharedVideoEncoder:
         for p in packets:
             p.pts = frame.pts
             p.time_base = frame.time_base
+            prepack_h264_packet(p)
         return packets
 
     def _publish(self, pkt):
@@ -436,6 +549,7 @@ class SharedVideoEncoder:
                     sub.queue.get_nowait()
                 sub.synced = pkt.is_keyframe
                 if not sub.synced:
+                    self.request_keyframe()
                     continue
             sub.queue.put_nowait(pkt)
 
@@ -456,8 +570,8 @@ class SharedVideoEncoder:
                     self._keyframe_requested = False
                     self._last_forced = now
 
-                width, height = self.source._get_target_dims()
-                fps = int(self.config.get("video", "target_fps", 30) or 30)
+                width, height = self.source._get_target_dims(frame.width, frame.height)
+                fps = self.source._get_target_fps()
                 bps = int(self.config.get("video", "bitrate_kbps", 2500) or 2500) * 1000
 
                 packets = await loop.run_in_executor(
@@ -472,6 +586,7 @@ class SharedVideoEncoder:
                 await asyncio.sleep(0.1)
 
     async def stop(self):
+        self.source.stop()
         if self._task:
             self._task.cancel()
             try:
@@ -518,16 +633,19 @@ class WebRTCStreamServer:
         self.state_mgr = StreamStateManager()
         self.receiver = NDIReceiver(
             source_name=self.config.get("ndi", "source_name", ""),
+            color_format=self.config.get("ndi", "color_format", "FASTEST"),
             low_bandwidth=self.config.get("ndi", "low_bandwidth", False),
         )
         self.encoder = SharedVideoEncoder(self.receiver, self.config, self.state_mgr)
         self.pcs: Set[RTCPeerConnection] = set()
         self.finder = None
+        self._local_ip = get_local_ip()
+        self._local_ip_ts = time.perf_counter()
 
         self.app = FastAPI(
             title="PECH NDI-to-WebRTC Streaming Bridge",
             description="Ultra-low latency NDI to WebRTC/WHEP tablet streamer with REST state control",
-            version="1.0.21",
+            version="1.0.22",
         )
 
         self.app.add_middleware(
@@ -541,6 +659,13 @@ class WebRTCStreamServer:
 
         self.server = None
         self._setup_routes()
+
+    def _get_cached_ip(self) -> str:
+        now = time.perf_counter()
+        if now - self._local_ip_ts >= 30.0:
+            self._local_ip = get_local_ip()
+            self._local_ip_ts = now
+        return self._local_ip
 
     def _setup_routes(self):
         app = self.app
@@ -557,6 +682,13 @@ class WebRTCStreamServer:
             if os.path.exists(index_file):
                 return FileResponse(index_file, media_type="text/html")
             raise HTTPException(status_code=404, detail="index.html not found")
+
+        @app.get("/admin", response_class=FileResponse)
+        async def get_admin():
+            admin_file = os.path.join(self.web_dir, "admin.html")
+            if os.path.exists(admin_file):
+                return FileResponse(admin_file, media_type="text/html")
+            raise HTTPException(status_code=404, detail="admin.html not found")
 
         # Static assets at root for PWA / Service Worker / Cast receiver
         @app.get("/sw.js", response_class=FileResponse)
@@ -595,6 +727,7 @@ class WebRTCStreamServer:
             # Map start/stop to resume/pause
             normalized_action = "pause" if action in ("pause", "stop") else "resume"
             await self.state_mgr.set_state(normalized_action, req.message)
+            self.encoder.request_keyframe()
             logger.info(f"Stream control executed: action={normalized_action}, message='{req.message}'")
 
             return {
@@ -608,6 +741,7 @@ class WebRTCStreamServer:
         @app.post("/api/stream/pause")
         async def post_stream_pause(message: Optional[str] = "Pausing - slides will show again shortly"):
             await self.state_mgr.set_state("pause", message)
+            self.encoder.request_keyframe()
             return {
                 "status": "ok",
                 "action": "pause",
@@ -618,6 +752,7 @@ class WebRTCStreamServer:
         @app.post("/api/stream/resume")
         async def post_stream_resume():
             await self.state_mgr.set_state("resume", "")
+            self.encoder.request_keyframe()
             return {
                 "status": "ok",
                 "action": "resume",
@@ -631,7 +766,7 @@ class WebRTCStreamServer:
         @app.get("/api/stream/status")
         @app.get("/api/status")
         async def get_status():
-            local_ip = get_local_ip()
+            local_ip = self._get_cached_ip()
             port = self.config.settings.get("port") or self.config.get("server", "http_port", 8123)
             with self.receiver._lock:
                 stats = dict(self.receiver.stats)

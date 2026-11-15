@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>PECH NDI Stream</title>
-  <link rel="stylesheet" href="/static/style.css?v=1.0.21">
+  <link rel="stylesheet" href="/static/style.css?v=1.0.22">
   <style>
     /* Direct kiosk protection overrides */
     html, body {
@@ -37,7 +37,7 @@
     </div>
   </div>
 
-  <script src="/static/player.js?v=1.0.21"></script>
+  <script src="/static/player.js?v=1.0.22"></script>
   <script>
     let player = null;
     let streamState = {
@@ -122,12 +122,18 @@
 
       player.start();
 
-      // Fallback periodic poll of /api/stream/status (every 3 seconds)
+      // Fallback periodic poll of /api/stream/status (every 3 seconds when WS is not connected)
       setInterval(async () => {
+        if (player && player.ws && player.ws.readyState === WebSocket.OPEN && player.isConnected) {
+          return;
+        }
         try {
           const res = await fetch('/api/stream/status');
           if (res.ok) {
             const data = await res.json();
+            if (player && player.isConnected) {
+              streamState.connected = true;
+            }
             streamState.isPaused = !!data.is_paused;
             if (data.message !== undefined) {
               streamState.message = data.message;
@@ -135,9 +141,11 @@
             updateOverlay();
           }
         } catch (e) {
-          // If server temporarily unreachable, show waiting
-          streamState.connected = false;
-          updateOverlay();
+          // Only mark disconnected if WebRTC peer itself is not connected
+          if (!player || !player.isConnected) {
+            streamState.connected = false;
+            updateOverlay();
+          }
         }
       }, 3000);
     });
