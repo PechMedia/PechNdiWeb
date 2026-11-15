@@ -227,11 +227,18 @@ class StreamStateManager:
         self.action: str = "resume"
         self.message: str = ""
         self.ws_clients: Set[WebSocket] = set()
+        self._state_listeners: Set = set()
         self._lock = asyncio.Lock()
         self._cached_frame: Optional[np.ndarray] = None
         self._cached_key: Optional[str] = None
         self._cached_yuv_arr: Optional[np.ndarray] = None
         self._cached_yuv_key: Optional[str] = None
+
+    def add_state_listener(self, cb):
+        self._state_listeners.add(cb)
+
+    def remove_state_listener(self, cb):
+        self._state_listeners.discard(cb)
 
     @property
     def is_paused(self) -> bool:
@@ -251,6 +258,12 @@ class StreamStateManager:
                 "message": self.message,
                 "is_paused": self.is_paused,
             }
+
+        for cb in list(self._state_listeners):
+            try:
+                cb()
+            except Exception:
+                pass
 
         # Broadcast update to connected WebSockets
         for ws in list(self.ws_clients):
@@ -299,15 +312,31 @@ class NDIVideoTrack(VideoStreamTrack):
         self._last_emit_time = 0.0
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._event = asyncio.Event()
+        self._last_frame_sample: Optional[np.ndarray] = None
+        self._last_frame_meta = None
+        self._identical_count = 0
+        self._cached_live_yuv_arr: Optional[np.ndarray] = None
+        self._cached_live_yuv_dims = None
+        self._pause_burst_count = 0
+        self._last_pause_key = None
+        self._keyframe_woken = False
         self.receiver.add_video_subscriber(self._on_video_frame)
+        self.state_mgr.add_state_listener(self._on_state_change)
 
     def _on_video_frame(self, frame_info):
+        self.wake()
+
+    def _on_state_change(self):
+        self.wake()
+
+    def wake(self):
         if self._loop and not self._loop.is_closed():
             self._loop.call_soon_threadsafe(self._event.set)
 
     def stop(self):
         super().stop()
         self.receiver.remove_video_subscriber(self._on_video_frame)
+        self.state_mgr.remove_state_listener(self._on_state_change)
 
     def _get_target_dims(self, src_w: int = 1280, src_h: int = 720):
         raw_w = self.config.get("video", "target_width", 1280)
@@ -338,6 +367,12 @@ class NDIVideoTrack(VideoStreamTrack):
         self._last_pts = pts
         return pts
 
+    def _stamp_frame(self, video_frame: av.VideoFrame) -> av.VideoFrame:
+        video_frame.pts = self._next_pts()
+        video_frame.time_base = self._time_base
+        self._last_emit_time = time.perf_counter()
+        return video_frame
+
     async def recv(self):
         if self._loop is None:
             self._loop = asyncio.get_running_loop()
@@ -348,24 +383,79 @@ class NDIVideoTrack(VideoStreamTrack):
         target_fps = self._get_target_fps()
         target_w, target_h = self._get_target_dims(*self._last_src_dims)
 
-        # 1. Check if stream is in paused state
+        # 1. Paused state: fast 3-frame burst for immediate transition/IDR, then 2 FPS idle keepalive
         if self.state_mgr.is_paused:
+            self._identical_count = 0
+            pause_key = (self.state_mgr.message, target_w, target_h)
+            if pause_key != self._last_pause_key:
+                self._last_pause_key = pause_key
+                self._pause_burst_count = 0
+
             eff_fps = target_fps if target_fps > 0 else 30
-            if self._last_emit_time > 0:
-                wait = (self._last_emit_time + 1.0 / eff_fps) - time.perf_counter()
+            if self._pause_burst_count < 3 and not self._keyframe_woken:
+                if self._last_emit_time > 0:
+                    wait = (self._last_emit_time + 1.0 / eff_fps) - time.perf_counter()
+                    if wait > 0:
+                        await asyncio.sleep(wait)
+            elif not self._keyframe_woken and self._last_emit_time > 0:
+                deadline = self._last_emit_time + 0.50
+                while self.state_mgr.is_paused and not self._keyframe_woken:
+                    remaining = deadline - time.perf_counter()
+                    if remaining <= 0:
+                        break
+                    self._event.clear()
+                    if not self.state_mgr.is_paused or self._keyframe_woken:
+                        break
+                    try:
+                        await asyncio.wait_for(self._event.wait(), timeout=remaining)
+                    except asyncio.TimeoutError:
+                        break
+
+            if self.state_mgr.is_paused:
+                self._keyframe_woken = False
+                self._pause_burst_count += 1
+                return self._stamp_frame(self.state_mgr.get_pause_yuv_frame(target_w, target_h))
+
+        self._last_pause_key = None
+        self._pause_burst_count = 0
+
+        # Pace output: full rate during live motion/transitions, 3 FPS keepalive on static slides
+        if self._last_emit_time > 0 and not self._keyframe_woken:
+            if self._identical_count >= 3:
+                deadline = self._last_emit_time + 0.33
+                while not self.state_mgr.is_paused and not self._keyframe_woken:
+                    remaining = deadline - time.perf_counter()
+                    if remaining <= 0:
+                        break
+                    self._event.clear()
+                    with self.receiver._lock:
+                        fi = self.receiver.latest_video_frame
+                    if fi and fi.get("receive_time", 0) > self._last_processed_receive_time:
+                        sample = fi["data"].ravel()[::251]
+                        meta = (fi["width"], fi["height"], fi["stride"], fi["fourcc"])
+                        if (
+                            meta != self._last_frame_meta
+                            or self._last_frame_sample is None
+                            or not np.array_equal(sample, self._last_frame_sample)
+                        ):
+                            break
+                        self._last_processed_receive_time = fi["receive_time"]
+                    try:
+                        await asyncio.wait_for(self._event.wait(), timeout=remaining)
+                    except asyncio.TimeoutError:
+                        break
+            elif target_fps > 0:
+                wait = (self._last_emit_time + 0.85 / target_fps) - time.perf_counter()
                 if wait > 0:
                     await asyncio.sleep(wait)
-            video_frame = self.state_mgr.get_pause_yuv_frame(target_w, target_h)
-            video_frame.pts = self._next_pts()
-            video_frame.time_base = self._time_base
-            self._last_emit_time = time.perf_counter()
-            return video_frame
 
-        # Rate-limit high-FPS sources without adding beat-frequency delay at matching FPS
-        if target_fps > 0 and self._last_emit_time > 0:
-            wait = (self._last_emit_time + 0.85 / target_fps) - time.perf_counter()
-            if wait > 0:
-                await asyncio.sleep(wait)
+        woke_for_kf = self._keyframe_woken
+        self._keyframe_woken = False
+
+        if self.state_mgr.is_paused:
+            self._identical_count = 0
+            self._pause_burst_count += 1
+            return self._stamp_frame(self.state_mgr.get_pause_yuv_frame(target_w, target_h))
 
         # 2. Event-driven check for fresh NDI frame
         frame_info = None
@@ -375,6 +465,8 @@ class NDIVideoTrack(VideoStreamTrack):
         if fi and fi.get("receive_time", 0) > self._last_processed_receive_time:
             frame_info = fi
             self._last_processed_receive_time = frame_info["receive_time"]
+        elif (self._identical_count >= 3 or woke_for_kf) and fi and (time.perf_counter() - fi.get("receive_time", 0)) < 2.0:
+            frame_info = fi
         else:
             eff_fps = target_fps if target_fps > 0 else 30
             recent_live = fi is not None and (time.perf_counter() - fi.get("receive_time", 0)) < 1.0
@@ -391,11 +483,9 @@ class NDIVideoTrack(VideoStreamTrack):
                 self._last_processed_receive_time = frame_info["receive_time"]
 
         if self.state_mgr.is_paused:
-            video_frame = self.state_mgr.get_pause_yuv_frame(target_w, target_h)
-            video_frame.pts = self._next_pts()
-            video_frame.time_base = self._time_base
-            self._last_emit_time = time.perf_counter()
-            return video_frame
+            self._identical_count = 0
+            self._pause_burst_count += 1
+            return self._stamp_frame(self.state_mgr.get_pause_yuv_frame(target_w, target_h))
 
         if not frame_info:
             with self.receiver._lock:
@@ -411,6 +501,25 @@ class NDIVideoTrack(VideoStreamTrack):
                 raw_data = frame_info["data"]
                 fourcc = frame_info["fourcc"]
                 self._last_src_dims = (width, height)
+                target_w, target_h = self._get_target_dims(width, height)
+
+                sample = raw_data.ravel()[::251]
+                meta = (width, height, stride, fourcc)
+                is_same = (
+                    self._last_frame_meta == meta
+                    and self._last_frame_sample is not None
+                    and np.array_equal(sample, self._last_frame_sample)
+                )
+                if is_same:
+                    self._identical_count += 1
+                    if self._cached_live_yuv_arr is not None and self._cached_live_yuv_dims == (target_w, target_h):
+                        return self._stamp_frame(av.VideoFrame.from_ndarray(self._cached_live_yuv_arr, format="yuv420p"))
+                else:
+                    self._identical_count = 0
+                    self._last_frame_sample = sample.copy()
+                    self._last_frame_meta = meta
+                    self._cached_live_yuv_arr = None
+                    self._cached_live_yuv_dims = None
 
                 if fourcc == FOURCC_UYVY:
                     row_bytes = width * 2
@@ -438,20 +547,18 @@ class NDIVideoTrack(VideoStreamTrack):
                     img_arr = raw_data[: height * width * 4].reshape((height, width, 4))
                     video_frame = av.VideoFrame.from_ndarray(img_arr[:, :, :3], format="bgr24")
 
+                if self._identical_count == 1:
+                    video_frame = video_frame.reformat(width=target_w, height=target_h, format="yuv420p")
+                    self._cached_live_yuv_arr = video_frame.to_ndarray()
+                    self._cached_live_yuv_dims = (target_w, target_h)
+
                 # Scaling to target resolution is done by SharedVideoEncoder off the event loop
-                video_frame.pts = self._next_pts()
-                video_frame.time_base = self._time_base
-                self._last_emit_time = time.perf_counter()
-                return video_frame
+                return self._stamp_frame(video_frame)
             except Exception as e:
                 logger.warning(f"Error packing video frame: {e}")
 
         # 3. No live frames yet: output waiting standby frame
-        standby = self._get_standby_yuv_frame(target_w, target_h)
-        standby.pts = self._next_pts()
-        standby.time_base = self._time_base
-        self._last_emit_time = time.perf_counter()
-        return standby
+        return self._stamp_frame(self._get_standby_yuv_frame(target_w, target_h))
 
 
 class _Subscriber:
@@ -493,6 +600,9 @@ class SharedVideoEncoder:
 
     def request_keyframe(self):
         self._keyframe_requested = True
+        self.source._identical_count = 0
+        self.source._keyframe_woken = True
+        self.source.wake()
 
     def _encode(self, frame, force_keyframe, width, height, bps, fps):
         eff_fps = fps if fps > 0 else 30
@@ -509,7 +619,8 @@ class SharedVideoEncoder:
             codec.options = {
                 "level": "51" if width * height > 1920 * 1080 else "42",
                 "tune": "zerolatency",
-                "preset": "veryfast",
+                "preset": "superfast",
+                "threads": "2",
                 "forced-idr": "1",
                 "maxrate": str(bps),
                 "bufsize": str(max(bps // 2, 250000)),  # 0.5s VBV cap smooths keyframe bursts on Wi-Fi
@@ -645,7 +756,7 @@ class WebRTCStreamServer:
         self.app = FastAPI(
             title="PECH NDI-to-WebRTC Streaming Bridge",
             description="Ultra-low latency NDI to WebRTC/WHEP tablet streamer with REST state control",
-            version="1.0.22",
+            version="1.0.23",
         )
 
         self.app.add_middleware(
@@ -726,6 +837,7 @@ class WebRTCStreamServer:
 
             # Map start/stop to resume/pause
             normalized_action = "pause" if action in ("pause", "stop") else "resume"
+            self.receiver.paused = normalized_action == "pause"
             await self.state_mgr.set_state(normalized_action, req.message)
             self.encoder.request_keyframe()
             logger.info(f"Stream control executed: action={normalized_action}, message='{req.message}'")
@@ -740,6 +852,7 @@ class WebRTCStreamServer:
         # Convenience aliases for vMix / macros / scripts
         @app.post("/api/stream/pause")
         async def post_stream_pause(message: Optional[str] = "Pausing - slides will show again shortly"):
+            self.receiver.paused = True
             await self.state_mgr.set_state("pause", message)
             self.encoder.request_keyframe()
             return {
@@ -751,6 +864,7 @@ class WebRTCStreamServer:
 
         @app.post("/api/stream/resume")
         async def post_stream_resume():
+            self.receiver.paused = False
             await self.state_mgr.set_state("resume", "")
             self.encoder.request_keyframe()
             return {

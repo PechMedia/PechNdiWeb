@@ -1,6 +1,6 @@
 # PECH NDI-to-WebRTC Streaming Bridge
 ## Installation, Configuration & Operator's Guide
-**Version:** 1.0.22  
+**Version:** 1.0.23  
 **Target:** Low-Latency WebRTC Tablet Streaming for Churches & Visually Impaired Members
 
 ---
